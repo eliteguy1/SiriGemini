@@ -31,6 +31,11 @@ static BOOL gInGeminiCallback = NO;            // 재진입 가드
 static NSTimeInterval gLastDispatchTime = 0;   // 고빈도 호출 스로틀용
 static const NSTimeInterval kMinDispatchInterval = 1.0;
 
+// SiriPlus 역공학 기반 응답 차단(-11): 가로채기가 진행되는 동안 Apple이 SpringBoard로 보내는
+// 출력 명령(SAUI 계열)과 요청 타임아웃을 막는다. 값 설정/해제 위치는 훅 본문 참조.
+static BOOL gIsInterceptingSiri = NO;          // 현재 발화가 Gemini에 가로채진 상태
+static NSString *gCapturedQuestion = nil;      // 키워드 제거 후 캡처된 질문(관측용)
+
 // 필터 확장(-8)의 파생 위험: SpringBoard / SiriViewService / com.apple.siri / assistantd 에
 // 동시에 인젝션되면 동일 발화가 프로세스별로 중복 dispatch 되어 답변이 여러 번 재생될 수 있다.
 // Darwin 알림으로 "선점"을 브로드캐스트하고, 선점을 목격한 프로세스는 창 동안 인터셉트를 포기한다.
@@ -155,7 +160,7 @@ static void SiriGeminiSpeak(NSString *text) {
 // %ctor(SpringBoard 부팅 중, 메인 스레드)에서 호출하면 워치독이 프로세스를 잡아
 // 무한 리스프링을 일으키므로(-9 기기 증언) 팝업 경로를 완전히 삭제하고 로그만 남긴다.
 // kSiriGeminiBuildTag는 수동 문자열이므로 자동 증가하는 Theos build number와 맞도록 갱신해야 한다.
-static NSString * const kSiriGeminiBuildTag = @"1.0.0-10";
+static NSString * const kSiriGeminiBuildTag = @"1.0.0-12";
 
 static void SiriGeminiReportLoad(void) {
     NSString *procName = [NSProcessInfo processInfo].processName;
@@ -429,14 +434,16 @@ static BOOL SiriGeminiHandleExtractionFailure(id recognitionObject) {
 
     if (recognizedText && SiriGeminiShouldIntercept(recognizedText)) {
         SiriGeminiClaimThisUtterance();
-        NSString *question = SiriGeminiStripKeyword(recognizedText);
-        NSLog(@"[SiriGemini] intercept: %@", question);
+        gIsInterceptingSiri = YES;
+        gCapturedQuestion = [SiriGeminiStripKeyword(recognizedText) copy];
+        NSLog(@"[SiriGemini] INTERCEPT ACTIVE: '%@'", gCapturedQuestion);
+        AudioServicesPlaySystemSound(1520);   // 텍스트 추출 성공 2차 햅틱(지시 B)
         gInGeminiCallback = YES;
-        [[GeminiWebClient sharedClient] sendQuestion:question
+        [[GeminiWebClient sharedClient] sendQuestion:gCapturedQuestion
                                           completion:^(NSString * _Nullable answer, NSError * _Nullable error) {
             gInGeminiCallback = NO;
             if (answer.length > 0) {
-                NSLog(@"[SiriGemini] answer: %@", answer);
+                NSLog(@"[SiriGemini] Gemini Answer: %@", answer);
                 SiriGeminiSpeak(answer);
             } else {
                 NSString *errText = [NSString stringWithFormat:@"제미나이 연결 오류: %@",
@@ -444,8 +451,12 @@ static BOOL SiriGeminiHandleExtractionFailure(id recognitionObject) {
                 NSLog(@"[SiriGemini] error speech: %@ (raw error: %@)", errText, error);
                 SiriGeminiSpeak(errText);
             }
-            // NOTE: 가로챈 경우 %orig를 호출하지 않아 기존 Siri 파이프라인을 중단한다.
-            // (키워드 매칭 시에만 해당. 폴백이 필요하면 2단계에서 %orig 호출 정책 확정.)
+            // 발화 시작 후 잠시 동안 Apple의 기본 응답 명령 차단을 유지하고 창을 닫는다.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                gIsInterceptingSiri = NO;
+                NSLog(@"[SiriGemini] interception window closed");
+            });
         }];
         return;  // %orig 생략 = 기존 음성 처리 가로챔
     }
@@ -469,6 +480,65 @@ static BOOL SiriGeminiHandleExtractionFailure(id recognitionObject) {
 }
 
 %end  // AFConnection
+
+// ============================================================================
+// -11: SiriPlus 역공학 기반 "Apple 기본 응답" 차단 훅 2종.
+// 셀렉터(`_invokeRequestTimeoutForReason:`, `_handleCommand:reply:`)는 외부 역공학 출처로,
+// 이 프로젝트에서 class-dump/Frida 확인을 못 했으므로 HYPOTHESIS다. 따라서 각각을 별도 %group으로
+// 나눠 `instancesRespondToSelector:` 검사 통과 시에만 바인딩한다: 미구현 셀렉터를 바인딩하면
+// substrate가 orig=NULL로 메서드를 추가하고, 훅 본문의 `%orig`가 NULL 점프가 되어 SpringBoard를
+// 잡는 경로가 생긴다(-9 무한 리스프링 교훈 → 검증 없는 바인딩 금지).
+// ============================================================================
+
+%group SiriGeminiAFTimeoutBlock
+
+%hook AFConnection
+
+- (void)_invokeRequestTimeoutForReason:(id)reason {
+    if (gIsInterceptingSiri) {
+        NSLog(@"[SiriGemini] request timeout blocked during Gemini generation (reason: %@)", reason);
+        return;   // 제미나이가 답변할 때까지 Siri의 타임아웃 종료 차단
+    }
+    %orig;
+}
+
+%end  // AFConnection
+
+%end  // group SiriGeminiAFTimeoutBlock
+
+%group SiriGeminiAFCommandBlock
+
+%hook AFConnection
+
+- (void)_handleCommand:(id)command reply:(id)reply {
+    if (gIsInterceptingSiri && command) {
+        NSString *cmdClass = NSStringFromClass([command class]);
+        NSLog(@"[SiriGemini] intercepted command: %@", cmdClass);
+        BOOL appleResponse = [cmdClass containsString:@"SAUI"];
+        if (!appleResponse) appleResponse = [cmdClass containsString:@"AddViews"];
+        if (!appleResponse) appleResponse = [cmdClass containsString:@"AssistantUtterance"];
+
+        if (appleResponse) {
+            NSLog(@"[SiriGemini] BLOCKED Apple Siri response command: %@", cmdClass);
+            // reply가 실제 블록일 때만 조용한 응답으로 처리한다(4번째 인자 타입은 HYPOTHESIS).
+            Class blockClass = NSClassFromString(@"NSBlock");
+            if (reply && blockClass && [reply isKindOfClass:blockClass]) {
+                void (^replyBlock)(id) = (void (^)(id))reply;
+                @try {
+                    replyBlock(nil);
+                } @catch (NSException *e) {
+                    NSLog(@"[SiriGemini] reply(nil) raised: %@", e);
+                }
+            }
+            return;   // %orig 미호출 = Apple의 기본 화면/음성 응답 차단
+        }
+    }
+    %orig;
+}
+
+%end  // AFConnection
+
+%end  // group SiriGeminiAFCommandBlock
 
 %group SiriGeminiUtteranceView
 
@@ -520,6 +590,8 @@ static void SiriGeminiSettingsChangedCallback(CFNotificationCenterRef center,
 // %init(_ungrouped)는 클래스가 로드된 뒤에만 호출한다. 프레임워크 지연 로드를 대비해
 // 앱 런칭 완료 시점에도 재시도한다(지시 3).
 static BOOL gAFHookInstalled = NO;
+static BOOL gTimeoutHookInstalled = NO;
+static BOOL gCommandHookInstalled = NO;
 
 static void SiriGeminiInstallAFHook(void) {
     if (gAFHookInstalled) return;
@@ -539,6 +611,22 @@ static void SiriGeminiInstallAFHook(void) {
     %init(_ungrouped);
     gAFHookInstalled = YES;
     NSLog(@"[SiriGemini] AFConnection hook INSTALLED (direct logos hook, ungrouped)");
+
+    // -11 응답 차단 훅: 셀렉터가 실제로 구현돼 있을 때만 바인딩한다(미구현 시 %orig=NULL 위험).
+    BOOL hasTimeout = [afConn instancesRespondToSelector:@selector(_invokeRequestTimeoutForReason:)];
+    BOOL hasCommand = [afConn instancesRespondToSelector:@selector(_handleCommand:reply:)];
+
+    if (hasTimeout && !gTimeoutHookInstalled) {
+        %init(SiriGeminiAFTimeoutBlock);
+        gTimeoutHookInstalled = YES;
+    }
+    if (hasCommand && !gCommandHookInstalled) {
+        %init(SiriGeminiAFCommandBlock);
+        gCommandHookInstalled = YES;
+    }
+
+    NSLog(@"[SiriGemini] response hook guard: _invokeRequestTimeoutForReason:%d _handleCommand:reply:%d -> installed timeout=%d command=%d",
+          hasTimeout ? 1 : 0, hasCommand ? 1 : 0, gTimeoutHookInstalled ? 1 : 0, gCommandHookInstalled ? 1 : 0);
 }
 
 %ctor {

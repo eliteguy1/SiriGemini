@@ -46,8 +46,8 @@
 * `lipo -archs`: dylib·prefs 모두 `arm64 arm64e` VERIFIED
 * `LC_ID_DYLIB`: `@loader_path/.jbroot/...` (슬라이스당 1, 총 2 출력) VERIFIED
 * `otool -L`: 시스템 lib + `@loader_path/.jbroot/usr/lib/libsubstrate.dylib` VERIFIED
-* `ldid -ed`: 무출력 (엔티틀メント 미임베드). 정상: Substrate dylib은 호스트 프로세스 권한 상속,
-  커스텀 엔티틀メント 불필요 (roothide fork 기본 `ldid -S` 서명).
+* `ldid -ed`: 무출력 (엔티틀먼트 미임베드). 정상: Substrate dylib은 호스트 프로세스 권한 상속,
+  커스텀 엔티틀먼트 불필요 (roothide fork 기본 `ldid -S` 서명).
 
 ## OPEN ISSUES (3단계 이후)
 

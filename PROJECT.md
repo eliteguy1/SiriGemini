@@ -11,9 +11,9 @@
 * **GitHub:** `eliteguy1/SiriGemini` (remote 설정 확인됨 / push 및 저장소 존재 여부는 실측 미확인)
 * **타겟 환경:** iOS 18.7.1 / RootHide (Dopamine 3) / `iphoneos-arm64e`
 * **지원 아키텍처:** `arm64`, `arm64e`
-* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-10+debug` (Theos debug build number)
-* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성(-7), 텍스트 복원 다층화 + 필터 확장 + 크로스프로세스 선점(-8), 직접 훅 전환(-9), **핫픽스: `%ctor` 내 차단형 알림 제거(-10)** 반영 (2026-10-13). `-9`의 `CFUserNotificationDisplayAlert`(timeout=0)가 SpringBoard 부팅 중 메인 스레드를 막아 무한 리스프링을 일으켰음(Apple docs로 blocking semantics 확인, 크래시 자체는 기기 보고). 원인은 여전히 미규명 → 로그(`ctor loaded in process:`)로 판정 계속
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-10+debug_iphoneos-arm64e.deb` (SHA256 `192655ec…591fb5`, 로컬/VM 일치; dylib 내 `CFUserNotification` 심볼 0건, `_AudioServicesPlaySystemSound` 유지)
+* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-12+debug` (Theos debug build number)
+* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성(-7), 텍스트 복원 다층화 + 선점(-8), 직접 훅 전환(-9), 차단형 알림 제거 핫픽스(-10), **SiriPlus식 3대 훅(`_tellSpeechDelegateSpeechRecognized:` / `_invokeRequestTimeoutForReason:` / `_handleCommand:reply:`) 탑재로 Apple 기본 응답 명령 차단 시도(-11, 로그 태그 동기화 -12)** 반영 (2026-10-13). 햅틱(-10)까지 확인되어 음성 훅 진입은 실증됨. 두 신규 셀렉터의 실존/시그니처는 미검증 → 바인딩을 `instancesRespondToSelector:` 가드 뒤에만 수행(근거: `docs/siriplus-three-hooks-response-block.md` §3)
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-12+debug_iphoneos-arm64e.deb` (SHA256 `a361fec7…4accde`, 로컬/VM 일치; dylib strings에 `_handleCommand`=2, `_invokeRequestTimeoutForReason`=2 확인)
 
 ## 2. 핵심 컨셉
 
@@ -61,7 +61,9 @@ sirigemini\
 
 | `1.0.0-9+debug` | 2026-10-13 | 진단 HUD 추가: `CFUserNotificationDisplayAlert`(SpringBoard 팝업 `SiriGemini v1.0.0-9` / 프로세스명 / AFConnection 발견 여부) + 사운드 1003, 훅 진입 시 햅틱 `AudioServicesPlaySystemSound(1519)`. AFConnection을 `%group` 없이 최상위 `%hook`로 전환하고 `%init(_ungrouped)` 호출을 자체 nil 검사(`SiriGeminiInstallAFHook`) 뒤로 배치, `UIApplicationDidFinishLaunchingNotification`에서 설정 리로드+바인딩 재시도. `SAUIAssistantUtteranceView`는 클래스 부재 프로세스 크래시를 피해 `%group` 조건부 유지(의도적 편차) | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`f6780d47…19f5e9`), AudioToolbox 링크 확인(`otool -L`), **기기 설치 시 무한 리스프링 유발 → `-10`에서 제거됨** |
 
-| `1.0.0-10+debug` | 2026-10-13 | 핫픽스: `CFUserNotificationDisplayAlert`·`SiriGeminiShowAlert`·사운드 1003 완전 삭제(`#import <CoreFoundation/CFUserNotification.h>` 제거), `SiriGeminiReportLoad()`를 로그 전용으로 축소, `kSiriGeminiBuildTag` → `1.0.0-10`. 햅틱(1519)과 dlopen/Darwin 옵저버/지연 바인딩 재시도는 유지(지침 샘플 대비 의도적 편차, §deviation in docs) | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`192655ec…591fb5`), `nm -u`로 CFUserNotification 심볼 0건 확인, 리스프링 정상화 여부는 기기 재테스트 대기 |
+| `1.0.0-10+debug` | 2026-10-13 | 핫픽스: `CFUserNotificationDisplayAlert`·`SiriGeminiShowAlert`·사운드 1003 완전 삭제(`#import <CoreFoundation/CFUserNotification.h>` 제거), `SiriGeminiReportLoad()`를 로그 전용으로 축소, `kSiriGeminiBuildTag` → `1.0.0-10`. 햅틱(1519)과 dlopen/Darwin 옵저버/지연 바인딩 재시도는 유지(지침 샘플 대비 의도적 편차, §deviation in docs) | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`192655ec…591fb5`), `nm -u`로 CFUserNotification 심볼 0건 확인. 후속 기기 보고에서 햅틱 1519 발생 = 부팅 정상화 + 음성 훅 진입 실증(사용자 보고) |
+
+| `1.0.0-11+debug` / `1.0.0-12+debug` | 2026-10-13 | SiriPlus식 3대 훅: 인터셉트 상태(`gIsInterceptingSiri`, `gCapturedQuestion`) + 성공 2차 햅틱 1520 + 답변 후 3초 창 유지, `_invokeRequestTimeoutForReason:` 타임아웃 차단, `_handleCommand:reply:`에서 클래스명 `SAUI`/`AddViews`/`AssistantUtterance` 매칭 시 `%orig` 미호출(Apple 출력 명령 차단), `reply`는 `NSBlock` 확인 후에만 `replyBlock(nil)`. 신규 셀렉터 둘은 **별도 %group으로 분리 후 `instancesRespondToSelector:` 가드 통과 시에만 %init**(미구현 바인딩의 %orig=NULL 크래시 방지). Logos 구문 오류(`%group` 내 `%hook` 누락 → `%orig does not make sense outside a function`) 수정 | 빌드 성공(오류 0), `-12` 회수 SHA256 로컬/VM 일치(`a361fec7…4accde`), `strings`로 셀렉터·로그 문자열 존재 확인, 두 셀렉터 런타임 실존은 미검증 |
 
 ## 5. 검증 상태 (Fact-Check Gate)
 
@@ -87,10 +89,14 @@ sirigemini\
 | 리스프링 후 SpringBoard에서 `SiriGemini v1.0.0-9` 팝업 표시, 발화 시 햅틱(1519) 발생 | runtime behavior | 기기 테스트 결과 **팝업 경로가 무한 리스프링을 유발**(-10에서 제거). 햅틱은 미검증 | DISPROVEN (popup as diagnostic — causes respring loop) / OPEN (햅틱) |
 | `CFUserNotificationDisplayAlert(timeout=0,…)`는 사용자가 닫을 때까지 호출 스레드를 기다린다(차단형) | API semantics | Apple Docs `cfusernotificationdisplayalert`: "wait for the user to dismiss… Pass `0` to have the dialog never time out" | VERIFIED (docs) |
 | `%ctor`(SpringBoard 부팅 중·메인 스레드)에서 위 차단 API 호출 → 부팅 정지 → 워치독 킬 → 무한 리스프링 | causal mechanism | docs(차단 semantics) + `-9` 코드 실측(`%ctor → ReportLoad → ShowAlert`) + 기기 증언(무한 리스프링). kill 신호/10초 수치는 로그 미확보 | VERIFIED (blocking chain) / HYPOTHESIS (watchdog 수치) |
+| 음성 훅 진입 정상 작동(햅틱 1519 발생), 하지만 Apple 기본 응답이 그대로 출력됨 | runtime behavior | 사용자 기기 보고(`-10` 이후 진동 확인, "시리입니다" 대답 계속) | VERIFIED (observed, single report) |
+| `AFConnection`의 `- _invokeRequestTimeoutForReason:` / `- _handleCommand:reply:` 실존 및 4번째 인자=블록 | private selectors/types | SiriPlus 역공학 인용(외부 출처). 로컬 검증 수단 부재(`extracted\` 파일 0개·`mcp\` 비어있음 실측), 디바이스 클래스 목록 미확보 | UNVERIFIED (externally-sourced HYPOTHESIS) → 기기 `response hook guard:` 로그로 판정 |
+| 미구현 셀렉터를 바인딩하면 `%orig`(orig=NULL) 경로가 NULL 점프 위험 → 가드 없이 심지 않는다 | design decision (calling/ABI hazard) | substrate semantics 원문 미확인. 근거: `-9` 교훈 + 로고스 생성 코드가 orig 심볼을 호출하는 구조(생성 코드 실측). 위험 회피 목적의 방어적 설계 | HYPOTHESIS (hazard model) / VERIFIED (코드가 그렇게 구성됨) |
+| Logos에서 `%group` 안에 `%hook` 없이 메서드를 두면 `error: %orig does not make sense outside a function`(exit 255, 산출물 0줄) | Logos/Theos parser semantics | VM 실측(`logos_err.txt` + `wc -l` = 0) 후 `%hook AFConnection` 추가 시 `LOGOS_OK`/703줄 | VERIFIED (parser behavior) |
 
 ## 6. 다음 단계 (OPEN ISSUES)
 
-0. **`-10` 재테스트로 원인 분리(팝업 폐지 → 로그 기준):** (a) 리스프링 정상화 = 차단형 UI가 크래시 원인이었음을 기기 확정, (b) Console/syslog에 `[SiriGemini] v1.0.0-10 ctor loaded in process: SpringBoard (AFConnection: 0/1)` 확인 = 주입·클래스 상태 확정, (c) 발화 시 진동(1519)+`HOOK FIRED in process <name>` = 셀렉터 유효성 판정. 상세: `docs/hotfix-remove-blocking-alert.md` §4
+0. **`-12` 재테스트 관측 목록** (세부: `docs/siriplus-three-hooks-response-block.md` §6): (a) `response hook guard: _invokeRequestTimeoutForReason:?1 _handleCommand:reply:?1 -> installed …` = 두 셀렉터 실존 1차 판정(0이면 미존재 또는 false-음성 → class-dump/Frida로 확인 후 가드 제거), (b) 발화 시 `INTERCEPT ACTIVE: '<질문>'` + 진동 1519→1520, (c) `intercepted command: <Class>` / `BLOCKED Apple Siri response command: <Class>` = Apple 출력 명령 클래스명 확정, (d) 그래도 "시리입니다"가 나오면 다른 셀렉터/클래스 경로 → 로그 근거로 차단 지점 이동, (e) `replyBlock(nil)` 호출 크래시 여부(타입 가설 검증).
 
 1. 기기 로그로 훅 실제 진입 프로세스 확정: `HOOK FIRED in process <name>` (원인 2 검증).
 2. 복원 성공 경로 확인: `text via phrases path` / `via direct selector` / `via description regex fallback` / `via description word fallback`. 정규식·단어 폴백 결과이면 잡음 여부를 반드시 확인할 것. 실패 시 `ALL text extraction paths failed, class: <X>` → `<X>` 구조를 class-dump/Frida로 조사해 정확한 경로 추가.

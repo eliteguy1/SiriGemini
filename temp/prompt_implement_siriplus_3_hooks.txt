@@ -1,0 +1,96 @@
+# 결정적 원인 해결 지시: SiriPlus 3대 훅(_handleCommand:reply: 및 _invokeRequestTimeoutForReason:) 전면 탑재
+
+## 1. 근본 원인 (왜 햅틱은 울렸는데 "시리"라고 대답했는가?)
+- **성공한 부분:** `_tellSpeechDelegateSpeechRecognized:` 훅이 100% 정상 작동하여 햅틱 진동(1519)이 울렸음.
+- **실패한 원인:** 
+  `AFConnection`에서 음성만 가로채고 끝내서는 안 됨!
+  Apple Siri 백엔드는 음성을 분석한 뒤 **`_handleCommand:reply:`**를 통해 SpringBoard로 "저는 Siri입니다"라는 UI/음성 출력 명령(`SAUIAddViews` / `SAUIAssistantUtteranceView`)을 전송함.
+  우리가 `_handleCommand:reply:`를 훅하지 않았기 때문에, **Apple Siri의 원래 응답 명령이 그대로 통과되어 시리가 화면과 음성으로 대답해버린 것임!**
+
+---
+
+## 2. 원본 SiriPlus 역공학 기반 3대 훅 규격 구현 (`src/Tweak.x`)
+
+### A. 상태 플래그 선언:
+```objc
+static BOOL gIsInterceptingSiri = NO;  // 현재 발화가 제미나이에 의해 가로채졌는지 여부
+static NSString *gCapturedQuestion = nil;
+```
+
+### B. 1번째 훅: `_tellSpeechDelegateSpeechRecognized:`
+```objc
+- (void)_tellSpeechDelegateSpeechRecognized:(id)recognition {
+    AudioServicesPlaySystemSound(1519); // 음성 수신 햅틱
+
+    NSString *recognizedText = SiriGeminiExtractRecognizedText(recognition);
+    NSLog(@"[SiriGemini] Speech Recognized: '%@'", recognizedText);
+
+    if (recognizedText && SiriGeminiShouldIntercept(recognizedText)) {
+        gIsInterceptingSiri = YES;
+        gCapturedQuestion = [SiriGeminiStripKeyword(recognizedText) copy];
+        NSLog(@"[SiriGemini] INTERCEPT ACTIVE: '%@'", gCapturedQuestion);
+
+        // 텍스트 추출 성공 2차 햅틱 (1520)
+        AudioServicesPlaySystemSound(1520);
+
+        // Gemini Web RPC 호출 시작
+        [[GeminiWebClient sharedClient] sendQuestion:gCapturedQuestion
+                                          completion:^(NSString * _Nullable answer, NSError * _Nullable error) {
+            if (answer.length > 0) {
+                NSLog(@"[SiriGemini] Gemini Answer: %@", answer);
+                SiriGeminiSpeak(answer);
+            } else {
+                NSString *errText = [NSString stringWithFormat:@"제미나이 연결 오류: %@",
+                                     error.localizedDescription ?: @"응답 없음"];
+                SiriGeminiSpeak(errText);
+            }
+            // 발화 완료 후 3초 뒤 가로채기 상태 해제
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                gIsInterceptingSiri = NO;
+            });
+        }];
+        return; // 원래 파이프라인 차단
+    }
+
+    %orig;
+}
+```
+
+### C. 2번째 훅: `_invokeRequestTimeoutForReason:` (타임아웃 차단)
+```objc
+- (void)_invokeRequestTimeoutForReason:(id)reason {
+    if (gIsInterceptingSiri) {
+        NSLog(@"[SiriGemini] Request timeout blocked during Gemini generation");
+        return; // 제미나이가 생각하고 답변할 때까지 시리 타임아웃 종료 차단
+    }
+    %orig;
+}
+```
+
+### D. 3번째 훅: `_handleCommand:reply:` (애플 순정 시리 답변 명령 차단)
+```objc
+- (void)_handleCommand:(id)command reply:(id)reply {
+    if (gIsInterceptingSiri) {
+        NSString *cmdClass = NSStringFromClass([command class]);
+        NSLog(@"[SiriGemini] Intercepting command: %@", cmdClass);
+        // Apple Siri가 화면/음성으로 답변을 출력하려는 명령(SAUI 계열)을 원천 차단!
+        if ([cmdClass containsString:@"SAUI"] || [cmdClass containsString:@"AddViews"] || [cmdClass containsString:@"AssistantUtterance"]) {
+            NSLog(@"[SiriGemini] BLOCKED Apple Siri default response command: %@", cmdClass);
+            // reply 블록이 있으면 빈 응답이나 성공 응답으로 조용히 처리
+            if (reply) {
+                void (^replyBlock)(id) = (void (^)(id))reply;
+                @try { replyBlock(nil); } @catch (NSException *e) {}
+            }
+            return; // %orig 호출 안 함 = 애플 시리의 "시리입니다" 출력 완전 차단!
+        }
+    }
+    %orig;
+}
+```
+
+---
+
+## 3. macOS VM 동기화, RootHide 재빌드 (`1.0.0-11+debug`), deb 회수:
+- `Tweak.x` VM으로 scp 전송.
+- `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+- 산출물 deb 회수 및 보고.

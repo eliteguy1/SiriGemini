@@ -73,6 +73,6 @@
 
 1. 기기 설치 후 로그로 확인 필요: `AFConnection hook FORCE-INITIALIZED`,
    `Raw speech object: <class>`, `Extracted text: '…'`, `intercept: …` 라인 유무.
-   * 로그가 전혀 안 남는다 → 훅이 로드되지 않은 것 (filter/进程 대상 문제).
+   * 로그가 전혀 안 남는다 → 훅이 로드되지 않은 것 (filter/프로세스 대상 문제).
    * `AFConnection class NOT FOUND` → AssistantServices 로드 시점/클래스명 재확인 필요.
 2. 클래스는 존재하나 콜백 미발화면 셀렉터명이 틀린 것 → Frida/class-dump로 실셀렉터 확정.
