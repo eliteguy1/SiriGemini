@@ -30,7 +30,7 @@
 ### 영향 범위
 * 파일: `src/Tweak.x`, `src/GeminiWebClient.m` (+ `PROJECT.md`, 본 문서).
 * 프레임워크(링크 실측): `Foundation`, `CoreFoundation`, `UIKit`, **AVFoundation**, **AVFAudio**, AudioToolbox, libobjc, libsubstrate(`@loader_path/.jbroot/usr/lib/`).
-* 프로세스: SpringBoard(필터에 포함된 Siri 관련 번들/assistantd 주입 환경) — 발화 자체는 SpringBoard进程中에서 AVFoundation 경유.
+* 프로세스: SpringBoard(필터에 포함된 Siri 관련 번들/assistantd 주입 환경) — 발화 자체는 SpringBoard 프로세스에서 AVFoundation 경유.
 
 ---
 
@@ -51,7 +51,7 @@
 * VM `/tmp/sg_build13.log`가 존재(2,365 bytes, mtime 10-13 20:05)하고 그 안에 error 0건·경고 4건이 들어있으므로, 리다이렉트 방식의 `make package THEOS_PACKAGE_SCHEME=roothide` 빌드가 수행됐음은 확인된다. 다만 **명령어 원문과 `make clean` 포함 여부는 본 세션에서 재현·확인할 수 없다** → `OPEN (provenance)`.
 * 실패 함정 2건(이후 회피책 확립, 공용 문서에 등록): 
   - 원격 zsh에서 존재하지 않는 glob(`*.xm`) 사용 시 명령 자체가 중단됨 → `ls -1` 후 필터로 대체.
-  - 중첩 quoting 때문에 `grep -Fc -- "$p"`의 `$p`가 shell에서 전개/분해돼 `_OBJC_CLASS_$_AVSpeechSynthesizer` 검증이 오염됐음(처음 실행 땐 `_OBJC_CLASS_=50` 같은 잘못된 출력) → **패턴을 파일로传输하고 `grep -Ff` / 스크립트화**로 재실행해 정정(§5에 정정값 전사).
+  - 중첩 quoting 때문에 `grep -Fc -- "$p"`의 `$p`가 shell에서 전개/분해돼 `_OBJC_CLASS_$_AVSpeechSynthesizer` 검증이 오염됐음(처음 실행 땐 `_OBJC_CLASS_=50` 같은 잘못된 출력) → **패턴을 파일로 전송하고 `grep -Ff` / 스크립트화**로 재실행해 정정(§5에 정정값 전사).
 
 ---
 
@@ -180,7 +180,7 @@ Rationale: 짧은 답변을 죽이는 게이트가 지시문이 지적한 ①뿐
 ## 6) 영향도 및 잠재적 리스크 (Risks & Regression)
 
 ### 타 컴포넌트 영향
-1. **AVAudioSession을 SpringBoard进程中에서 `Playback + DuckOthers`로 전환하고 active 유지** — 헤더 문서상 유효 조합이지만(§3 실측),副作用이 크다: 다른 앱 오디오가 nosso 세션 동안 ducked되고, 우리는 세션을 deactivate하지 않으므로 복원이 지연/누락될 수 있다. Siri 자체의 오디오 라우팅과 충돌해 오히려 무음이 지속될 가능성도 배제 못 한다(`OPEN ISSUE`).
+1. **AVAudioSession을 SpringBoard 프로세스에서 `Playback + DuckOthers`로 전환하고 active 유지** — 헤더 문서상 유효 조합이지만(§3 실측), 부작용이 크다: 다른 앱 오디오가 우리 세션 동안 ducked되고, 우리는 세션을 deactivate하지 않으므로 복원이 지연/누락될 수 있다. Siri 자체의 오디오 라우팅과 충돌해 오히려 무음이 지속될 가능성도 배제 못 한다(`OPEN ISSUE`).
 2. **TTS 엔진 상주**: `gSharedSynth`는 릴리스되지 않고 살아남는다(단 1개). 메모리 영향은 미미하지만, 발화 도중 새 답변이 오면 `stopSpeakingAtBoundary:Immediate`로 이전 발화를 자른다 → 잘린 문장이 들리는 UX 엣지케이스.
 3. **발화 스레드 이동**: 기존엔 Gemini 완료 큐에서 직접 발화했다가 메인 큐로 옮겼다. UI 훅(SAUI 계열)과 동일 스레드화가 되어 재진입 순서가 바뀔 수 있다 → `%orig` 호출 빈도/순서에 변화가 생겼을 가능성(관측 필요).
 4. **답변 파싱 완화**: ASCII 2자 이상도 후보가 된다. 토큰 정규식(`^[A-Za-z0-9_\-\.]+$`)과 URL/내부 상수 기각 목록, 한글 우선 정렬이 완충하지만 짧은 쓰레기가 선택되는 사례가 생기면 되돌릴 지점(knob)은 `SiriGeminiLooksLikeAnswer()` 의 최소 길이(한글 제외 20 부활)와 폴백 정규식의 `{0,240}` 상한이다.
@@ -192,7 +192,7 @@ Rationale: 짧은 답변을 죽이는 게이트가 지시문이 지적한 ①뿐
 | `Speaking utterance SUCCESS: '<문장>'` | 발화 요청이 AVFoundation에 전달됨. 있는데 소리가 없으면 **출력 경로/세션 문제**(가설 "dealloc 원인" 기각 검토로 전환) |
 | `[SiriGemini] Speak failed:` | 예외 발생 → 카테고리/보이스 설정 실패 가능성 확인 |
 | `answer parsed`(또는 답변 길이 로그)와 실제 발화 문장 비교 | 짧은 한국어 답변이 살아남았는지 판정. garbage가 발화되면 필터 knob 되돌림 |
-| 다른 앱(음악 등) 재생 중音量 저하 지속 여부 / Siri 호출 시 녹음 불량 | DuckOthers+active 유지 부작용 → `Ambient` 또는 세션 미변경 방식 전환 검토 |
+| 다른 앱(음악 등) 재생 중 볼륨 저하 지속 여부 / Siri 호출 시 녹음 불량 | DuckOthers+active 유지 부작용 → `Ambient` 또는 세션 미변경 방식 전환 검토 |
 | 크래시/리스프링 유무(`log show`, Crab 로그) | TTS·오디오 경로 조작이 SpringBoard를 잡는지 확인 |
 | 이전 발화가 도중에 잘리는 체감 | `stopSpeakingAtBoundary:Immediate` 정책 완화(예: 새 답변이 구 발화 종료 후 재생) 검토 |
 

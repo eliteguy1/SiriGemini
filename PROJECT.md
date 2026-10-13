@@ -11,9 +11,9 @@
 * **GitHub:** `eliteguy1/SiriGemini` — 저장소 존재 및 `-13`까지 동기화 실측 확인(`git ls-remote --heads origin` → `master = 710a8e5…`, `git status -sb` 선행/지체 없음)
 * **타겟 환경:** iOS 18.7.1 / RootHide (Dopamine 3) / `iphoneos-arm64e`
 * **지원 아키텍처:** `arm64`, `arm64e`
-* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-13+debug` (Theos debug build number)
-* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성(-7), 텍스트 복원 다층화 + 선점(-8), 직접 훅 전환(-9), 차단형 알림 제거 핫픽스(-10), SiriPlus식 3대 훅으로 Apple 기본 응답 명령 차단(-11/-12), **TTS 엔진 정적 보존(`gSharedSynth`)+메인 큐 발화+ko-KR 음성 + 단문 답변 필터 완화 및 한글 우선 선택(-13)** 반영 (2026-10-13). `-12` 기기 실측으로 음성 가로채기·햅틱·Apple 응답 차단 3종 성공 확인. 무음의 원인("synth 즉시 dealloc")은 미검증 가설이며, 세션 조작(`Playback + DuckOthers`, 미-deactivate) 리스크는 관측 필요
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-13+debug_iphoneos-arm64e.deb` (SHA256 `5fb00fd1…ddb55`, 로컬/VM 일치; dylib에 `setCategory:withOptions:error:`·`voiceWithLanguage:`·`stopSpeakingAtBoundary:` 셀렉터 및 `_OBJC_CLASS_$_AVSpeechSynthesizer/Voice` undefined 심볼 존재 확인)
+* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-14+debug` (Theos debug build number)
+* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성(-7), 텍스트 복원 다층화 + 선점(-8), 직접 훅 전환(-9), 차단형 알림 제거 핫픽스(-10), SiriPlus식 3대 훅으로 Apple 기본 응답 명령 차단(-11/-12), TTS 엔진 정적 보존+메인 큐 발화+ko-KR 음성 · 단문 답변 필터 완화 및 한글 우선 선택(-13), **인젝션 범위를 `com.apple.springboard` 단독으로 축소 + `AVAudioSession` 조작 전면 제거 + `_handleCommand:reply:`의 `replyBlock(nil)` 호출 삭제(-14)** 반영 (2026-10-13). `-13` 기기 실측: 짧은 답변 통과·발화 경로 확보되었으나 **시스템 체감 지연**과 **인식 후 Siri 즉시 종료** 보고됨. `-14`로 원인 제거(지연은 가설 귀속, 즉시 종료는 `replyBlock(nil)` 가설)
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-14+debug_iphoneos-arm64e.deb` (52,308 bytes, SHA256 `8439cfdf…020f4`, 로컬/VM 일치; 동봉 plist = `com.apple.springboard` 단독 실측, dylib에 `_OBJC_CLASS_$_AVAudioSession`·`setCategory:withOptions:error:` **없음**(0), `voiceWithLanguage:`·`stopSpeakingAtBoundary:`·`speakUtterance:` 존재, `reply(nil) raised` 로그 없음, 태그 문자열 `1.0.0-14`)
 
 ## 2. 핵심 컨셉
 
@@ -67,7 +67,9 @@ sirigemini\
 
 | `1.0.0-12` | 2026-10-13 | 로그 태그(`kSiriGeminiBuildTag`)를 실제 빌드 번호로 동기화(코드 차이 없음) → 이 빌드로 기기 배포·테스트: 음성 가로채기/햅틱/Apple 응답 차단 성공 확인 | SHA256 `a361fec7…4accde`, dylib strings에 신규 셀렉터 존재(각 2 = 훅+가드), `response hook guard` 로그 추가. **성공 판정 근거는 사용자 보고** |
 
-| `1.0.0-13+debug` | 2026-10-13 | (A) `SiriGeminiSpeak` 개편: `static AVSpeechSynthesizer *gSharedSynth`(정적 보존·재사용), 발화를 메인 큐로 이동, `AVAudioSession` `Playback + DuckOthers` + `setActive:YES`, `ko-KR` 음성, 발화 전 `stopSpeakingAtBoundary:Immediate`, 리플렉션(`objc_getClass`) 제거. (B) 답변 필터: 최소 길이 20→2(토큰/URL 기각은 유지), `SiriGeminiHasHangul()` 도입, 후보 선택 우선순위 `한글→공백→길이`, 폴백 정규식의 `{40,}` 때문에 짧은 답변이 추가로 죽는 결함 발견 → 한글 포함 인용 필드 우선 스캔 추가 + `SiriGeminiUnescapeJSONString()` 분리 | 사전 프로브(`logos` 714줄 / Tweak·GeminiWebClient 각각 syntax OK), 패키지 errors=0, dylib에 3개 셀렉터+신클래스 undefined 심볼 확인, SHA256 로컬=VM(`5fb00fd1…ddb55`), 소스 md5 동기화. 무음 원인 가설은 미검증(관측 대기) |
+| `1.0.0-13+debug` | 2026-10-13 | (A) `SiriGeminiSpeak` 개편: `static AVSpeechSynthesizer *gSharedSynth`(정적 보존·재사용), 발화를 메인 큐로 이동, `AVAudioSession` `Playback + DuckOthers` + `setActive:YES`, `ko-KR` 음성, 발화 전 `stopSpeakingAtBoundary:Immediate`, 리플렉션(`objc_getClass`) 제거. (B) 답변 필터: 최소 길이 20→2(토큰/URL 기각은 유지), `SiriGeminiHasHangul()` 도입, 후보 선택 우선순위 `한글→공백→길이`, 폴백 정규식의 `{40,}` 때문에 짧은 답변이 추가로 죽는 결함 발견 → 한글 포함 인용 필드 우선 스캔 추가 + `SiriGeminiUnescapeJSONString()` 분리 | 사전 프로브(`logos` 714줄 / Tweak·GeminiWebClient 각각 syntax OK), 패키지 errors=0, dylib에 3개 셀렉터+신클래스 undefined 심볼 확인, SHA256 로컬=VM(`5fb00fd1…ddb55`), 소스 md5 동기화. **기기 실측: 시스템 지연 + 인식 후 즉시 종료 발생** → `-14`에서 되돌림 |
+
+| `1.0.0-14+debug` | 2026-10-13 | (A) `src/SiriGemini.plist` 인젝션 범위를 `com.apple.springboard` 단독으로 축소(`com.apple.siri`, `com.apple.SiriViewService`, Executables `assistantd` 제거). (B) `SiriGeminiSpeak`에서 `AVAudioSession sharedInstance` + `setCategory:Playback/DuckOthers` + `setActive:YES` **전면 삭제**(pure `AVSpeechSynthesizer` 경로만 유지). (C) `_handleCommand:reply:`의 `NSBlock` 가드 + `replyBlock(nil)` 호출 + `reply(nil) raised` 로그 삭제 → Apple 응답을 `%orig`·reply 모두 없이 드롭. (D) 태그 `-14` | 사전 프로브(`plutil -lint` OK, `logos_exit=0`/707줄, `clang -fsyntax-only` 무출력), 빌드 exit 0 / errors 0 / warnings 4(전부 `-multiply_defined is obsolete`). 산출물: 52,308 bytes, SHA256 `8439cfdf…020f4`(로컬=VM), plist 단독 번들이 deb 내부에서 `plutil -p`로 확인, `_OBJC_CLASS_$_AVAudioSession`=0·`setCategory…`=0·`reply(nil) raised`=0(수정 반영 종단 증거), `1.0.0-14`=2. 상세: `docs/build-report-1.0.0-14-6sections.md` |
 
 ## 5. 검증 상태 (Fact-Check Gate)
 
@@ -100,10 +102,20 @@ sirigemini\
 | 짧은 답변 폐기 게이트는 필터 함수 하나만이 아니라 폴백 정규식 `{40,}`에도 있었다 | code-level fact | `-12` 소스 실측(`GeminiWebClient.m:105`, 폴백 패턴 157줄) → `-13`에서 두 곳 모두 완화 | VERIFIED (code inspection) — 지시문은 한 곳만 지적 |
 | 미구현 셀렉터를 바인딩하면 `%orig`(orig=NULL) 경로가 NULL 점프 위험 → 가드 없이 심지 않는다 | design decision (calling/ABI hazard) | substrate semantics 원문 미확인. 근거: `-9` 교훈 + 로고스 생성 코드가 orig 심볼을 호출하는 구조(생성 코드 실측). 위험 회피 목적의 방어적 설계 | HYPOTHESIS (hazard model) / VERIFIED (코드가 그렇게 구성됨) |
 | Logos에서 `%group` 안에 `%hook` 없이 메서드를 두면 `error: %orig does not make sense outside a function`(exit 255, 산출물 0줄) | Logos/Theos parser semantics | VM 실측(`logos_err.txt` + `wc -l` = 0) 후 `%hook AFConnection` 추가 시 `LOGOS_OK`/703줄 | VERIFIED (parser behavior) |
+| SiriPlus는 **오직 `com.apple.springboard`에만** 인젝션된다 (`-14` 축소 근거) | 필터 구성 | 로컬 원본 아티팩트 실측: `tweak/siriplus/extracted/data/var/jb/Library/MobileSubstrate/DynamicLibraries/SiriPlus.plist`(93 bytes) → VM `plutil -convert xml1 -o -` 결과 Bundles = `com.apple.springboard` 1개 | VERIFIED (primary artifact, 2026-10-13) |
+| SiriPlus가 `_handleCommand:` 처리 후 reply 블록을 호출하지 않고 드롭한다 | 외부 RE 주장(디스어셈블리 인용) | 원본 `SiriPlus.dylib`(463,024 bytes, fat arm64/arm64e) strings 실측: `_handleCommand:`=2, `_tellSpeechDelegate…`=2, `"Command of type"`=6 → **셀렉터·로그 문자열의 실재만** 확인. 함수 본문이 블록을 호출하는지는 역컴파일 못 함(정적 2회 한도 규칙에 따라 중단) | PARTIALLY VERIFIED (실재) / UNVERIFIED (semantics) |
+| `_handleCommand:reply:`의 `replyBlock(nil)`가 "처리 완료"로 해석돼 Siri가 즉시 종료된다(`-13` 증상) | causal mechanism | 우리 코드에 호출이 존재한 사실은 `-13` 소스 실측으로 VERIFIED. nil 응답→dismiss semantics는 Apple 문서/로그에서 근거 미확인, 사용자 증상(인식 후 종료)과 시간적 일치 | HYPOTHESIS (strong) → `-14` 관측으로 판정. 상세: `docs/build-report-1.0.0-14-6sections.md` §1 |
+| 인젝션 대상 4개→1개 축소로 시스템 지연이 개선된다 | causal mechanism(성능) | 지연의 정량 지표 없음(CPU/레이턴시 미측정). 단 `-13`에서 SpringBoard 세션을 Playback+DuckOthers로 바꾸고 deactivate하지 않았다는 사실과 원본 대비 초과 인젝션은 실측 | HYPOTHESIS → `-14` 기기 체감 + 로그로 판정(필요 시 `logs/` 수집) |
+| springboard 단독 인젝션에서도 Siri 훅 3종이 그대로 붙는가 | regression risk | 미검증. `-12` 성공_when_4개 대상이었으므로 어느 프로세스의 훅이었는지 분리되지 않음(`VERIFIED`=효과만, 프로세스 미분리) | **OPEN ISSUE** → `-14`에서 `Voice hook fired`/햅틱 부재 시 즉시 부분 복원(`com.apple.SiriViewService`) |
 
 ## 6. 다음 단계 (OPEN ISSUES)
 
-0. **`-13` 재테스트 관측 목록** (세부: `docs/fix-tts-dealloc-and-short-answer.md` §5): (a) 음성 청취 + 로그 `Speaking utterance SUCCESS: '<답변>'` → 이 로그가 있는데 소리가 없으면 "요청은 성공, 출력 경로 실패"(세션/SpringBoard 출력 경로 문제), 로그 자체가 없으면 답변 텍스트가 빈 값(`answer parsed`/`speak skipped` 확인)이나 발화 전 차단, (b) 짧은 질문("너 이름이 뭐야")에서 답변이 버려지지 않는지 → `answer parsed: <len> chars`와 실제 발화 문장 비교(짧은 ASCII 쓰레기가 선택되는지도 함께), (c) 음악/다른 앱 재생 중 ducking·Siri 녹음 방해 여부(`Playback + DuckOthers`, `setActive:YES` 후 해제 없음), (d) 크래시 유무(TTS 세션 조작 경로).
+0. **`-14` 재테스트 관측 목록** (세부: `docs/build-report-1.0.0-14-6sections.md` §6):
+   * **(a) 훅 생존 여부(최우선 판정)** — Siri 호출 시 `[SiriGemini] Voice hook fired`( 햅틱 1519/1520 포함)가 여전히 뜨는지. **없으면 인젝션 축소 실패** → Siri 셀렉터가 SpringBoard 밖의 프로세스에 있다는 뜻이므로 `com.apple.SiriViewService`만 부분 복원 후 재빌드.
+   * (b) `[SiriGemini] Speaking utterance SUCCESS: '<답변>'` 로그는 있는데 무음이면 → 세션 조작 제거로도 무음이 유지되는 것이니 "세션이 원인" 가설 기각, 출력 경로/라우팅 또는 별도 데몬 발화로 전환.
+   * (c) 인식 후 **Siri 창 유지** 여부(즉시 종료 해소). 계속 꺼지면 `replyBlock(nil)` 가설 폐기 → `_invokeRequestTimeoutForReason:` 차단이나 `%orig` 미호출의 다른 측면으로 전환. 반드시 `BLOCKED Apple Siri response command: <클래스명>` 로그의 **클래스명**을 확보해 어느 셀렉터가 응답을 막는지 분리할 것(여전히 OPEN).
+   * (d) 시스템 체감 지연 개선 여부, 음악 재생 중 볼륨/라우팅 이상 유무. 악화·불변이면 원인 재조사 + `logs/` 수집(CPU/지연 정량 지표 없음).
+   * (e) 크래시/리스프링 유무(Crab·log show) — `-13`(세션 조작 있음)과 비교.
    * 이미 관측 완료(-12): 음성 가로채기 성공, 햅틱 발생, Apple 기본 응답 차단 성공. 남은 미분리 항목은 **어떤 셀렉터가 응답을 막았는지**와 `reply` 블록 타입(로그 수집 시 확정).
 
 1. 기기 로그로 훅 실제 진입 프로세스 확정: `HOOK FIRED in process <name>` (원인 2 검증).
@@ -112,4 +124,4 @@ sirigemini\
 4. StreamGenerate 요청/응답 스키마·`bl` 값 확정(`SNlM0e acquired`, `StreamGenerate POST …`, `answer parsed`, `raw response head`) — 여전히 미검증.
 5. 기기 배포는 사용자가 수행 중(`-10`→`-12` 설치·테스트됨, `-13` 대기). `make install THEOS_DEVICE_IP=<IP>` 명령은 사용자 승인 시에만 실행한다. 팝업/HUD는 `-10` 이후 제거된 상태이므로 화면 피드백은 햅틱(1519/1520)과 로그로만 확인한다.
 6. Git: remote는 `https://github.com/eliteguy1/SiriGemini.git`(`git remote -v` 실측). 2026-10-13 기준 HEAD=`710a8e5`(v1.0.0-13)로 `-13`까지 커밋 완료, 작업 트리 clean(§1 실측). GitHub 푸시 여부는 미확인(`git status -sb`/remote tracking 재실측 필요). 커밋·push는 사용자 명시 요청 시에만 수행한다.
-7. 보고 표준: `AGENTS.md` §18(6대 필수 섹션) 등록 완료 — 템플릿 `D:\llama agent\docs\detailed-reporting-protocol-6sections.md`, `-13` 적용 실例 `docs/build-report-1.0.0-13-6sections.md`.
+7. 보고 표준: `AGENTS.md` §18(6대 필수 섹션) 등록 완료 — 템플릿 `D:\llama agent\docs\detailed-reporting-protocol-6sections.md`, 적용 사례: `docs/build-report-1.0.0-13-6sections.md`, `docs/build-report-1.0.0-14-6sections.md`.

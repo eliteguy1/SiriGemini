@@ -136,18 +136,16 @@ static NSString * SiriGeminiStripKeyword(NSString *text) {
 // Siri 발화 출력 (-13): AVSpeechSynthesizer를 정적 참조로 영구 보존한다.
 // 이전 구현은 지역 변수라 ARC에 의해 함수 종료 즉시 해제됐고, 발화 중 객체 해제가
 // 음성을 중단시킨다는 것이 이번 무음 버그의 가정 원인이다(원인 확정 아님 → docs 참고).
-// 실행 지점을 메인 큐로 옮기고, 재생 카테고리 + ko-KR 음성 설정을 추가한다.
+// 실행 지점을 메인 큐로 옮기고 ko-KR 음성을 설정한다.
+// -14: `AVAudioSession` 카테고리 변경(`Playback + DuckOthers`, 미-deactivate)은 SpringBoard
+// 전역 오디오 라우팅을 오염시켜 시스템 지연을 유발한다는 사용자 보고(-13 기기 실측 증상)에 따라
+// 세션 조작을 전면 제거하고 순수 `AVSpeechSynthesizer` 경로만 남긴다.
 static AVSpeechSynthesizer *gSharedSynth = nil;
 
 static void SiriGeminiSpeak(NSString *text) {
     if (text.length == 0) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         @try {
-            // 다른 오디오를 낮추고(TTS 출력 확보) 세션을 active로 만든다.
-            AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-            [audioSession setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionDuckOthers error:nil];
-            [audioSession setActive:YES error:nil];
-
             if (!gSharedSynth) {
                 gSharedSynth = [[AVSpeechSynthesizer alloc] init];
             }
@@ -171,7 +169,7 @@ static void SiriGeminiSpeak(NSString *text) {
 // %ctor(SpringBoard 부팅 중, 메인 스레드)에서 호출하면 워치독이 프로세스를 잡아
 // 무한 리스프링을 일으키므로(-9 기기 증언) 팝업 경로를 완전히 삭제하고 로그만 남긴다.
 // kSiriGeminiBuildTag는 수동 문자열이므로 자동 증가하는 Theos build number와 맞도록 갱신해야 한다.
-static NSString * const kSiriGeminiBuildTag = @"1.0.0-13";
+static NSString * const kSiriGeminiBuildTag = @"1.0.0-14";
 
 static void SiriGeminiReportLoad(void) {
     NSString *procName = [NSProcessInfo processInfo].processName;
@@ -531,17 +529,12 @@ static BOOL SiriGeminiHandleExtractionFailure(id recognitionObject) {
 
         if (appleResponse) {
             NSLog(@"[SiriGemini] BLOCKED Apple Siri response command: %@", cmdClass);
-            // reply가 실제 블록일 때만 조용한 응답으로 처리한다(4번째 인자 타입은 HYPOTHESIS).
-            Class blockClass = NSClassFromString(@"NSBlock");
-            if (reply && blockClass && [reply isKindOfClass:blockClass]) {
-                void (^replyBlock)(id) = (void (^)(id))reply;
-                @try {
-                    replyBlock(nil);
-                } @catch (NSException *e) {
-                    NSLog(@"[SiriGemini] reply(nil) raised: %@", e);
-                }
-            }
-            return;   // %orig 미호출 = Apple의 기본 화면/음성 응답 차단
+            // -14: `replyBlock(nil)` 호출을 전면 제거한다. nil 응답으로 "처리 완료"로 알리면
+            // Siri가 즉시 세션을 종료(화면 닫힘)한다는 것이 -13 기기 증상이다.
+            // `-13`에서 확인한 사실: SiriPlus 바이너리에 `_handleCommand:` 셀렉터와
+            // "Command of type" 로그 문자열이 실존(strings/nm 실측, `tweak/siriplus` 원본 deb).
+            // 다만 SiriPlus가 reply 블록을 호출하지 않고 드롭하는지는 정적 검증 못 함 → HYPOTHESIS.
+            return;   // %orig 미호출 + reply 미호출 = Apple 기본 화면/음성 응답 드롭
         }
     }
     %orig;
