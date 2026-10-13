@@ -1,0 +1,94 @@
+# 긴급 음성 인식 추출 로직 전면 수정 지시 (SASSpeechRecognized 역공학 기반)
+
+## 1. 근본 원인 분석
+원본 트윅(SiriPlus.dylib) 역공학 분석 결과:
+1. `_tellSpeechDelegateSpeechRecognized:(id)speechRecognized`의 인자는 단순 문자열이 아니라,
+   **`SAObjects.framework`의 `SASSpeechRecognized` 객체**입니다.
+2. 기존 `Tweak.x`는 `[recognition recognizedText]` 또는 `[recognition bestText]`를 시도했으나 이러한 셀렉터는 존재하지 않아 텍스트 추출이 nil이 되었고, 이로 인해 가로채기가 발동되지 않았습니다.
+3. 올바른 텍스트 추출 경로:
+   - `id recognition = [speechRecognized valueForKey:@"recognition"];` (또는 `[speechRecognized respondsToSelector:@selector(recognition)]`)
+   - `NSArray *phrases = [recognition valueForKey:@"phrases"];`
+   - 각 phrase 내부: `NSArray *tokens = [phrase valueForKey:@"tokens"];`
+   - 각 token 내부: `NSString *tokenText = [token valueForKey:@"text"];`
+   - 모든 tokenText를 순서대로 결합하여 전체 발화 텍스트(`fullRecognizedText`) 복원!
+4. 프레임워크 사전 로드 누락:
+   - `%ctor`에서 `AssistantServices` 및 `SAObjects` 프레임워크를 `dlopen`하지 않아 `%ctor` 시점에 `AFConnection` 클래스 로드가 누락될 위험이 있음.
+
+---
+
+## 2. 구체적 수정 지시 (`src/Tweak.x`)
+
+### A. 프레임워크 dlopen 추가:
+```objc
+%ctor {
+    @autoreleasepool {
+        dlopen("/System/Library/PrivateFrameworks/AssistantServices.framework/AssistantServices", RTLD_NOW);
+        dlopen("/System/Library/PrivateFrameworks/SAObjects.framework/SAObjects", RTLD_NOW);
+        // ...
+    }
+}
+```
+
+### B. `ExtractTextFromSpeechRecognized` 헬퍼 함수 구현:
+```objc
+static NSString *SiriGeminiExtractRecognizedText(id speechRecognized) {
+    if (!speechRecognized) return nil;
+    if ([speechRecognized isKindOfClass:[NSString class]]) return speechRecognized;
+
+    @try {
+        id recognition = nil;
+        if ([speechRecognized respondsToSelector:@selector(recognition)]) {
+            recognition = [speechRecognized valueForKey:@"recognition"];
+        } else {
+            recognition = speechRecognized;
+        }
+
+        NSArray *phrases = nil;
+        if ([recognition respondsToSelector:@selector(phrases)]) {
+            phrases = [recognition valueForKey:@"phrases"];
+        }
+
+        if (phrases && [phrases isKindOfClass:[NSArray class]]) {
+            NSMutableString *fullText = [NSMutableString string];
+            for (id phrase in phrases) {
+                NSArray *tokens = nil;
+                if ([phrase respondsToSelector:@selector(tokens)]) {
+                    tokens = [phrase valueForKey:@"tokens"];
+                }
+                if (tokens && [tokens isKindOfClass:[NSArray class]]) {
+                    for (id token in tokens) {
+                        NSString *tokenText = nil;
+                        if ([token respondsToSelector:@selector(text)]) {
+                            tokenText = [token valueForKey:@"text"];
+                        }
+                        if (tokenText.length > 0) {
+                            [fullText appendString:tokenText];
+                        }
+                    }
+                }
+            }
+            if (fullText.length > 0) {
+                return [fullText stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            }
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[SiriGemini] SASSpeechRecognized parse failed: %@", e);
+    }
+    return nil;
+}
+```
+
+### C. `_tellSpeechDelegateSpeechRecognized:` 내 호출 교체:
+- `recognizedText = SiriGeminiExtractRecognizedText(recognition);`
+- `NSLog(@"[SiriGemini] Recognized voice text: %@", recognizedText);` 상세 로그 추가.
+
+### D. 키워드 매칭 로직 유연화:
+- `SiriGeminiShouldIntercept`:
+  - `gKeyword.length == 0`이면 모든 질문 가로챔.
+  - `gKeyword.length > 0`인 경우:
+    - 공백 무시 비교 또는 `[text containsString:gKeyword]` 또는 `hasPrefix:` 모두 지원. (예: 사용자가 "젬아 날씨 알려줘" 또는 "젬아날씨" 등)
+
+### E. VM 동기화, RootHide 재빌드 (`1.0.0-5+debug`), 산출물 회수:
+- `Tweak.x` VM으로 scp 동기화.
+- `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+- deb 파일 회수 및 보고.

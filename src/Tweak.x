@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "GeminiWebClient.h"
@@ -53,30 +54,47 @@ static void SiriGeminiReloadSettings(void) {
     }
 }
 
+// 키워드 매칭 (유연화): 비어 있으면 전체 가로챔. 설정 시 대소문자 무시 부분일치,
+// 공백 무시 비교까지 지원 ("젬아 날씨", "젬아날씨" 모두 매칭).
+static BOOL SiriGeminiKeywordMatches(NSString *recognizedText) {
+    if (gKeyword.length == 0) return YES;
+    if ([recognizedText rangeOfString:gKeyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        return YES;
+    }
+    NSString *flatText = [[recognizedText componentsSeparatedByCharactersInSet:
+                           [NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsJoinedByString:@""];
+    NSString *flatKey = [[gKeyword componentsSeparatedByCharactersInSet:
+                          [NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsJoinedByString:@""];
+    if (flatKey.length > 0 &&
+        [flatText rangeOfString:flatKey options:NSCaseInsensitiveSearch].location != NSNotFound) {
+        return YES;
+    }
+    return NO;
+}
+
 static BOOL SiriGeminiShouldIntercept(NSString *recognizedText) {
     if (!gEnabled) return NO;
     if (gInGeminiCallback) return NO;  // Gemini 응답 재생성 루프 방지
     if (recognizedText.length == 0) return NO;
-    if (gKeyword.length > 0) {
-        // 키워드 접두사 매칭 (대소문자 무시). 예: "젬아 ..." / "Gemini ..."
-        if ([recognizedText rangeOfString:gKeyword options:NSCaseInsensitiveSearch].location != 0) {
-            return NO;
-        }
-    }
+    if (!SiriGeminiKeywordMatches(recognizedText)) return NO;
     NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
     if (now - gLastDispatchTime < kMinDispatchInterval) return NO;  // 스로틀
     return YES;
 }
 
 static NSString * SiriGeminiStripKeyword(NSString *text) {
-    if (gKeyword.length > 0 && [text length] > [gKeyword length]) {
-        NSString *prefix = [text substringToIndex:[gKeyword length]];
-        if ([prefix caseInsensitiveCompare:gKeyword] == NSOrderedSame) {
-            return [[text substringFromIndex:[gKeyword length]]
-                    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if (gKeyword.length > 0) {
+        // 첫 매칭 위치의 키워드를 제거 (접두사 아니어도 됨).
+        NSRange r = [text rangeOfString:gKeyword options:NSCaseInsensitiveSearch];
+        if (r.location != NSNotFound) {
+            NSMutableString *m = [text mutableCopy];
+            [m deleteCharactersInRange:r];
+            return [m stringByTrimmingCharactersInSet:
+                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
         }
     }
-    return text;
+    return [text stringByTrimmingCharactersInSet:
+            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
 }
 
 // Siri 발화 출력 (best-effort).
@@ -109,27 +127,69 @@ static void SiriGeminiSpeak(NSString *text) {
 @interface SAUIAssistantUtteranceView : UIView  // HYPOTHESIS
 @end
 
+// SASSpeechRecognized 파서.
+// 경로: speechRecognized.recognition → .phrases[] → .tokens[] → .text 결합.
+// 근거: SiriPlus.dylib 역공학 분석(오케스트레이터 제공) — 기기 실측 검증은 아직 없음
+// (EXTERNALLY-SOURCED HYPOTHESIS). KVC 미준수 키 접근 시 예외 → @catch 후 nil.
+static NSString *SiriGeminiExtractRecognizedText(id speechRecognized) {
+    if (!speechRecognized) return nil;
+    if ([speechRecognized isKindOfClass:[NSString class]]) return speechRecognized;
+
+    @try {
+        id recognition = nil;
+        if ([speechRecognized respondsToSelector:@selector(recognition)]) {
+            recognition = [speechRecognized valueForKey:@"recognition"];
+        } else {
+            recognition = speechRecognized;
+        }
+
+        NSArray *phrases = nil;
+        if ([recognition respondsToSelector:@selector(phrases)]) {
+            phrases = [recognition valueForKey:@"phrases"];
+        }
+
+        if (phrases && [phrases isKindOfClass:[NSArray class]]) {
+            NSMutableString *fullText = [NSMutableString string];
+            for (id phrase in phrases) {
+                NSArray *tokens = nil;
+                if ([phrase respondsToSelector:@selector(tokens)]) {
+                    tokens = [phrase valueForKey:@"tokens"];
+                }
+                if (tokens && [tokens isKindOfClass:[NSArray class]]) {
+                    for (id token in tokens) {
+                        NSString *tokenText = nil;
+                        if ([token respondsToSelector:@selector(text)]) {
+                            tokenText = [token valueForKey:@"text"];
+                        }
+                        if (tokenText.length > 0) {
+                            if (fullText.length > 0) [fullText appendString:@" "];
+                            [fullText appendString:tokenText];
+                        }
+                    }
+                }
+            }
+            if (fullText.length > 0) {
+                return [fullText stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            }
+        }
+    } @catch (NSException *e) {
+        NSLog(@"[SiriGemini] SASSpeechRecognized parse failed: %@", e);
+    }
+    // 진단용: 파싱 실패 시 클래스명 기록 (다음 반복의 단서).
+    NSLog(@"[SiriGemini] unparsed recognition class: %@",
+          NSStringFromClass([speechRecognized class]));
+    return nil;
+}
+
 %group SiriGeminiAFConnection
 
 %hook AFConnection
 
 // HYPOTHESIS: Siri 음성 인식 콜백. 실제 시그니처는 기기 class-dump/Frida로 확정 필요.
 - (void)_tellSpeechDelegateSpeechRecognized:(id)recognition {
-    NSString *recognizedText = nil;
-    @try {
-        // AFSpeechRecognition 결과 객체에서 텍스트 추출 시도 (best-effort, 다경로).
-        if ([recognition isKindOfClass:[NSString class]]) {
-            recognizedText = recognition;
-        } else if ([recognition respondsToSelector:@selector(recognizedText)]) {
-            recognizedText = ((id (*)(id, SEL))objc_msgSend)(recognition, @selector(recognizedText));
-        } else if ([recognition respondsToSelector:@selector(bestText)]) {
-            recognizedText = ((id (*)(id, SEL))objc_msgSend)(recognition, @selector(bestText));
-        } else if ([recognition respondsToSelector:@selector(description)]) {
-            recognizedText = [recognition description];
-        }
-    } @catch (NSException *e) {
-        NSLog(@"[SiriGemini] text extract failed: %@", e);
-    }
+    NSString *recognizedText = SiriGeminiExtractRecognizedText(recognition);
+    NSLog(@"[SiriGemini] Recognized voice text: %@", recognizedText);
 
     if (recognizedText && SiriGeminiShouldIntercept(recognizedText)) {
         gLastDispatchTime = [[NSDate date] timeIntervalSince1970];
@@ -204,6 +264,10 @@ static void SiriGeminiSettingsChangedCallback(CFNotificationCenterRef center,
 
 %ctor {
     @autoreleasepool {
+        // AFConnection/SASSpeechRecognized 클래스가 %ctor 시점에 로드되도록
+        // private 프레임워크 사전 로드 (링크는 하지 않음 — SDK에 .tbd 없음).
+        dlopen("/System/Library/PrivateFrameworks/AssistantServices.framework/AssistantServices", RTLD_NOW);
+        dlopen("/System/Library/PrivateFrameworks/SAObjects.framework/SAObjects", RTLD_NOW);
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                         NULL,
                                         SiriGeminiSettingsChangedCallback,
