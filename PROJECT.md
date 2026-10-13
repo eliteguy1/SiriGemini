@@ -7,8 +7,8 @@
 * **프로젝트:** SiriGemini (`com.csw.sirigemini`)
 * **로컬 경로:** `D:\llama agent\tweak\sirigemini`
 * **Working Directory:** `D:\llama agent\tweak\sirigemini\src`
-* **Git 저장소:** 초기화됨 (로컬 `.git`, remote `https://github.com/eliteguy1/SiriGemini.git` — 본 세션 `git remote -v` 실측). `-6/-7/-8` 변경분은 미커밋
-* **GitHub:** `eliteguy1/SiriGemini` (remote 설정 확인됨 / push 및 저장소 존재 여부는 실측 미확인)
+* **Git 저장소:** 초기화됨 (로컬 `.git`, remote `https://github.com/eliteguy1/SiriGemini.git`). 2026-10-13 실측: `HEAD = 710a8e5 "v1.0.0-13: Fix TTS engine dealloc via static synthesizer and relax short answer filter"` (author `eliteguy1 <eliteguy1@users.noreply.github.com>`, 2026-10-13 20:12 +0900), 직전 커밋 `649d688`(1.0.0-12+debug), `1a68424`(1.0.0-10+debug). `-13` 변경분(`PROJECT.md`, `src/Tweak.x`, `src/GeminiWebClient.m`, `docs/fix-tts-dealloc-and-short-answer.md`, 빌드 deb 포함 5개 파일)은 해당 커밋에 포함. 이후 본 세션에서 `PROJECT.md` 갱신(§1 상태 실측 반영)과 `docs/build-report-1.0.0-13-6sections.md` 신규 작성 → 이 두 파일은 **미커밋**(2026-10-13 `git status --short` 실측). **커밋/푸시는 에이전트가 수행하지 않았으며**(세션 외부에서 수행됨). 푸시 상태 실측: `git ls-remote --heads origin` → `refs/heads/master = 710a8e5…`(HEAD와 동일), `git status -sb` 선행/지체 없음 → **GitHub 동기화 완료**
+* **GitHub:** `eliteguy1/SiriGemini` — 저장소 존재 및 `-13`까지 동기화 실측 확인(`git ls-remote --heads origin` → `master = 710a8e5…`, `git status -sb` 선행/지체 없음)
 * **타겟 환경:** iOS 18.7.1 / RootHide (Dopamine 3) / `iphoneos-arm64e`
 * **지원 아키텍처:** `arm64`, `arm64e`
 * **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-13+debug` (Theos debug build number)
@@ -111,4 +111,5 @@ sirigemini\
 3. 다중 인젝션 동작 확인: `skip: utterance claimed …`, `suppress orig: utterance handled …` 빈도로 `kPeerClaimWindow = 3.0s` 적정성 판단(지연/누락 발생 시 조정).
 4. StreamGenerate 요청/응답 스키마·`bl` 값 확정(`SNlM0e acquired`, `StreamGenerate POST …`, `answer parsed`, `raw response head`) — 여전히 미검증.
 5. 기기 배포는 사용자가 수행 중(`-10`→`-12` 설치·테스트됨, `-13` 대기). `make install THEOS_DEVICE_IP=<IP>` 명령은 사용자 승인 시에만 실행한다. 팝업/HUD는 `-10` 이후 제거된 상태이므로 화면 피드백은 햅틱(1519/1520)과 로그로만 확인한다.
-6. Git: remote는 `https://github.com/eliteguy1/SiriGemini.git`로 설정돼 있고(`git remote -v` 실측) `-6/-7/-8` 변경분이 **미커밋**. 커밋·push는 사용자 명시 요청 시에만 수행한다.
+6. Git: remote는 `https://github.com/eliteguy1/SiriGemini.git`(`git remote -v` 실측). 2026-10-13 기준 HEAD=`710a8e5`(v1.0.0-13)로 `-13`까지 커밋 완료, 작업 트리 clean(§1 실측). GitHub 푸시 여부는 미확인(`git status -sb`/remote tracking 재실측 필요). 커밋·push는 사용자 명시 요청 시에만 수행한다.
+7. 보고 표준: `AGENTS.md` §18(6대 필수 섹션) 등록 완료 — 템플릿 `D:\llama agent\docs\detailed-reporting-protocol-6sections.md`, `-13` 적용 실例 `docs/build-report-1.0.0-13-6sections.md`.
