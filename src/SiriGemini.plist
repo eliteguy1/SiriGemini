@@ -7,6 +7,8 @@
 		<key>Bundles</key>
 		<array>
 			<string>com.apple.springboard</string>
+			<string>com.apple.siri</string>
+			<string>com.apple.SiriViewService</string>
 		</array>
 		<key>Executables</key>
 		<array>

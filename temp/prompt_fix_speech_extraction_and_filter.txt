@@ -1,0 +1,62 @@
+# 긴급 가로채기 복구 지시: 음성 텍스트 추출 전면 강화, 필터 확장 및 런타임 HUD 피드백
+
+## 1. 문제 분석
+사용자가 키워드를 완전히 지웠는데도 "너 이름이 뭐야"에 대해 여전히 기본 시리가 대답함.
+
+### 원인 1: `SiriGeminiExtractRecognizedText`가 nil을 반환함
+- `SASSpeechRecognized` 내부 프로퍼티 구조 탐색 실패 시 fallback 없이 `return nil;` 됨.
+- `recognizedText == nil`이 되어 `if (recognizedText && SiriGeminiShouldIntercept)` 조건이 false가 되고, 결국 `%orig;`가 실행되어 기본 애플 시리가 대답함!
+
+### 원인 2: `SiriGemini.plist` 필터 범위 부족
+- iOS 18 환경에서 Siri UI 및 음성 인식은 `com.apple.siri`, `com.apple.SiriViewService` 등 보조 프로세스에서 실행될 수 있음.
+- 현재 필터에는 `com.apple.springboard`와 `assistantd`만 등록되어 있어 Siri UI 프로세스에 dylib가 인젝션되지 않았을 위험이 있음.
+
+---
+
+## 2. 구체적 수정 지시
+
+### A. `src/SiriGemini.plist` 필터 확장:
+```xml
+<dict>
+	<key>Filter</key>
+	<dict>
+		<key>Bundles</key>
+		<array>
+			<string>com.apple.springboard</string>
+			<string>com.apple.siri</string>
+			<string>com.apple.SiriViewService</string>
+		</array>
+		<key>Executables</key>
+		<array>
+			<string>assistantd</string>
+		</array>
+	</dict>
+</dict>
+```
+
+### B. `src/Tweak.x` - `SiriGeminiExtractRecognizedText` 전면 강화 (절대 nil 반환 방지):
+1. **다중 프로퍼티 적극 탐색**:
+   - `[obj valueForKeyPath:@"recognition.phrases"]`
+   - `[obj valueForKey:@"phrases"]`
+   - `[obj respondsToSelector:@selector(text)]` -> `[obj text]`
+   - `[obj respondsToSelector:@selector(transcription)]`
+   - `[obj respondsToSelector:@selector(bestTranscription)]`
+   - `[obj respondsToSelector:@selector(bestText)]`
+   - `[obj respondsToSelector:@selector(recognizedText)]`
+2. **Description 기반 정규식 폴백 (비장의 무기)**:
+   - 프로퍼티 탐색 실패 시 `NSString *desc = [speechRecognized description];`
+   - 정규식 `text\\s*=\\s*\"([^\"]+)\"` 또는 `phrase\\s*=\\s*\"([^\"]+)\"` 또는 `token\\s*=\\s*\"([^\"]+)\"` 검색하여 매칭된 모든 텍스트를 공백으로 결합!
+3. **그래도 실패 시**:
+   - 만약 클래스명이 `SASSpeechRecognized` 또는 Speech 관련 객체이고 `gKeyword.length == 0`이면,
+   - 최소한 description에서 사람이 읽을 수 있는 단어들을 추출하거나,
+   - 가로채기를 진행하여 `"음성이 인식되었으나 텍스트 복원에 실패했습니다: <클래스명>"`이라고 음성 출력하여 %orig로 빠지는 것을 차단하고 진단할 수 있게 함!
+
+### C. 훅 진입 시 시각적/음성 확인 피드백:
+- `_tellSpeechDelegateSpeechRecognized:` 진입 시:
+  `NSLog(@"[SiriGemini] HOOK FIRED in process %@!", [NSProcessInfo processInfo].processName);`
+  로그를 남기고, 가로채기가 시작되면 즉시 Gemini로 전송.
+
+### D. macOS VM 동기화, RootHide 재빌드 (`1.0.0-8+debug`), deb 회수:
+- `SiriGemini.plist` 및 `Tweak.x` VM으로 scp 전송.
+- `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+- 산출물 회수 및 보고.

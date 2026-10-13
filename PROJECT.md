@@ -7,13 +7,13 @@
 * **프로젝트:** SiriGemini (`com.csw.sirigemini`)
 * **로컬 경로:** `D:\llama agent\tweak\sirigemini`
 * **Working Directory:** `D:\llama agent\tweak\sirigemini\src`
-* **Git 저장소:** 미초기화 (1단계 스켈레톤 작성 후 초기화 예정)
-* **GitHub:** `eliteguy1/SiriGemini` (미확인 — 원격 생성 여부 OPEN)
+* **Git 저장소:** 초기화됨 (로컬 `.git`, remote `https://github.com/eliteguy1/SiriGemini.git` — 본 세션 `git remote -v` 실측). `-6/-7/-8` 변경분은 미커밋
+* **GitHub:** `eliteguy1/SiriGemini` (remote 설정 확인됨 / push 및 저장소 존재 여부는 실측 미확인)
 * **타겟 환경:** iOS 18.7.1 / RootHide (Dopamine 3) / `iphoneos-arm64e`
 * **지원 아키텍처:** `arm64`, `arm64e`
-* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-7+debug` (Theos debug build number)
-* **프로젝트 상태:** 키워드 가로채기 + 훅 강제 초기화(-6), Gemini Web RPC 구현 및 에러 음성 피드백(-7) 반영 (2026-10-13). 사용자/지침 보고 기준 음성 가로채기는 성공, 응답 무음 → -7에서 RPC+피드백으로 해결 시도 (직접 로그 확인은 미수행). **RPC 프로토콜/응답 파싱은 기기 캡처 미검증**
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-7+debug_iphoneos-arm64e.deb` (SHA256 `b2424c65…31abfad`, 로컬/원격 일치)
+* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-8+debug` (Theos debug build number)
+* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성 피드백(-7), **음성 텍스트 복원 다층화 + 필터 확장 + 크로스프로세스 선점(-8)** 반영 (2026-10-13). 원인 1(nil 반환으로 %orig 통과)은 `-7` 소스에서 code-level로 확인되어 수정 완료. 원인 2(보조 프로세스에서 훅 호출)는 계측만 추가(`HOOK FIRED in process …`) — 기기 로그 미검증
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-8+debug_iphoneos-arm64e.deb` (SHA256 `374c7a0b…18877`, 로컬/VM 일치)
 
 ## 2. 핵심 컨셉
 
@@ -57,6 +57,8 @@ sirigemini\
 
 | `1.0.0-7+debug` | 2026-10-13 | Gemini Web 실제 RPC 구현: GET /app에서 `SNlM0e`(+`bl`) 정규식 추출·쿠키 키드 인메모리 캐시, StreamGenerate POST(`f.req=[null,"[[\"질문\"],null,[\"\",\"\",\"\"]]"]&at=token`), 응답은 이중-JSON 디코딩+재귀 longest-text 휴리스틱 파싱(실패 시 raw 선두 500자 로그). 에러 시 음성 피드백(`제미나이 연결 오류: …`). 컴파일 오류 3종 수정(rangeAtIndex 콜론 폼, 중첩 send 대괄호, 대괄호 그룹핑) | 빌드 성공(오류 0/경고=기존 ld 경고 4건), SHA256 로컬/원격 일치, RPC 프로토콜 runtime 미검증 |
 
+| `1.0.0-8+debug` | 2026-10-13 | 음성 텍스트 복원 다층화(phrases → 직접 키 5종(text/transcription/bestTranscription/bestText/recognizedText) → description 정규식(`text=`/`phrase=`/`token=`) → description 단어추출 `[가-힣A-Za-z]{2,}`), 전 경로 실패 시 클래스명 기록 + 진단 음성(`음성이 인식되었으나 텍스트 복원에 실패했습니다: <class>`) 후 `%orig` 차단. 필터에 `com.apple.siri`, `com.apple.SiriViewService` 추가. 훅 진입 로그 `HOOK FIRED in process …`. 파생: Darwin 알림 `com.csw.sirigemini.claimed` 선점으로 다중 인젝션 중복 답변 억제(3초 창). 오류 1건(unused function → 헬퍼 미연결) 수정 | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`374c7a0b…18877`), 런타임 미검증 |
+
 ## 5. 검증 상태 (Fact-Check Gate)
 
 | claim | type | verification source | status |
@@ -71,10 +73,16 @@ sirigemini\
 | `bl=boq_assistant-bard-web-server_20240519.16_p0` 상수 값 유효성 | external param | recall(구버전 포착값). 대비책: `/app` HTML에서 `"bl":"..."` 동적 추출 후 폴백으로만 사용 (`GeminiWebClient.m`) | UNVERIFIED / HYPOTHESIS |
 | 답변 텍스트 인덱스 경로(`parsed[0][2]…`) 확정 | external response schema | 미확정 → 인덱스 하드코딩 대신 이중 JSON 디코딩+재귀 longest-text 휴리스틱, 실패 시 raw 선두 500자 로그로 캡처 가능하게 함 | OPEN ISSUE (설계 의도적 우회) |
 | `gCachedSNlM0e` 등 정적 선언/메서드 구조, ObjC 메시지 전송 문법 오류 3종 존재 및 해결 | code state | VM `grep -rn gCachedSNlM0e`(:33 선언 확인), `clang -fsyntax-only`(수정 후 무출력) → 이후 `make package` 오류 0 | VERIFIED (compile-level) |
+| `-7`까지 파서 실패 시 조용한 `nil` 반환 → 훅 조건 false → `%orig`(기본 Siri) 실행 | code state | `-7` `src/Tweak.x` 소스 검토: 성공 경로 외 끝의 `return nil;` 단일, 훅은 `if (recognizedText && …)` 구조 | VERIFIED (code-level) |
+| 다중 프로세스 동시 주입 시 동일 발화 중복 dispatch/중복 음성 | runtime behavior | 미측정. 필터 확장(-8)으로 파생된 위험 → Darwin 선점(3초 창)으로 완화 시도 | HYPOTHESIS |
+| `com.apple.siri`, `com.apple.SiriViewService` bundle ID의 실제 매칭 | external identifiers | 지시 recall 입력. plist가 패키지에 포함된 것(plutil)만 실측, 기기 주입/매칭 미확인 | UNVERIFIED (recall) / VERIFIED (패키징 포함) |
+| `logos.pl + clang -fsyntax-only`(vendor include, CydiaSubstrate 스텁)로 Tweak.x 사전 문법 검증 가능 | build methodology | VM 실측: `PROBE_OK` 후 `make package` 오류 0. 단 `-Werror,-Wunused-function`은 프로브에서 잡히지 않음(전체 빌드에서 발견) | VERIFIED (tool chain, 한계 기록) |
 
 ## 6. 다음 단계 (OPEN ISSUES)
 
-1. `AFConnection` 실제 셀렉터/시그니처를 기기 헤더·disassembly·Frida 런타임으로 확인할 것.
-2. StreamGenerate 요청/응답을 기기 로그(`SNlM0e acquired`, `StreamGenerate POST …`, `answer parsed`, 필요 시 `raw response head`)로 확보하여 실제 응답 스키마(정확한 인덱스 경로)와 `bl` 값을 확정할 것. 현재 파서는 휴리스틱이며 4xx/파싱 실패 시 토큰 갱신 후 1회 재시도한다.
-3. 기기 설치·동작 테스트 미수행 (Siri 가로챔 성공 여부는 사용자 보고로만 확인, `-7`의 RPC 응답/음성 피드백은 미테스트).
-4. Git 저장소는 초기화되어 있고 remote는 `https://github.com/eliteguy1/SiriGemini.git` (본 세션 `git remote -v` 실측). 커밋/푸시는 사용자 요청 시 수행 — 현재 워킹 트리에 `-6`/`-7` 변경분이 미커밋 상태.
+1. 기기 로그로 훅 실제 진입 프로세스 확정: `HOOK FIRED in process <name>` (원인 2 검증).
+2. 복원 성공 경로 확인: `text via phrases path` / `via direct selector` / `via description regex fallback` / `via description word fallback`. 정규식·단어 폴백 결과이면 잡음 여부를 반드시 확인할 것. 실패 시 `ALL text extraction paths failed, class: <X>` → `<X>` 구조를 class-dump/Frida로 조사해 정확한 경로 추가.
+3. 다중 인젝션 동작 확인: `skip: utterance claimed …`, `suppress orig: utterance handled …` 빈도로 `kPeerClaimWindow = 3.0s` 적정성 판단(지연/누락 발생 시 조정).
+4. StreamGenerate 요청/응답 스키마·`bl` 값 확정(`SNlM0e acquired`, `StreamGenerate POST …`, `answer parsed`, `raw response head`) — 여전히 미검증.
+5. `-8` 포함 기기 설치·동작 테스트 미수행(설치는 사용자 수행/아이피 대기).
+6. Git: remote는 `https://github.com/eliteguy1/SiriGemini.git`로 설정돼 있고(`git remote -v` 실측) `-6/-7/-8` 변경분이 **미커밋**. 커밋·push는 사용자 명시 요청 시에만 수행한다.

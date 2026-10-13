@@ -30,6 +30,15 @@ static BOOL gInGeminiCallback = NO;            // 재진입 가드
 static NSTimeInterval gLastDispatchTime = 0;   // 고빈도 호출 스로틀용
 static const NSTimeInterval kMinDispatchInterval = 1.0;
 
+// 필터 확장(-8)의 파생 위험: SpringBoard / SiriViewService / com.apple.siri / assistantd 에
+// 동시에 인젝션되면 동일 발화가 프로세스별로 중복 dispatch 되어 답변이 여러 번 재생될 수 있다.
+// Darwin 알림으로 "선점"을 브로드캐스트하고, 선점을 목격한 프로세스는 창 동안 인터셉트를 포기한다.
+// (HYPOTHESIS: 크로스프로세스 동시 호출 빈도는 기기 로그로 확정 필요)
+#define SiriGeminiClaimNotification CFSTR("com.csw.sirigemini.claimed")
+
+static NSTimeInterval gLastPeerClaim = 0;      // 다른 프로세스(또는 자기 자신) 선점 시각
+static const NSTimeInterval kPeerClaimWindow = 3.0;
+
 static void SiriGeminiReloadSettings(void) {
     CFPreferencesAppSynchronize(SiriGeminiPrefsAppID);
 
@@ -80,6 +89,14 @@ static BOOL SiriGeminiShouldIntercept(NSString *recognizedText) {
     if (gInGeminiCallback) return NO;  // Gemini 응답 재생성 루프 방지
     if (recognizedText.length == 0) return NO;
 
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+
+    // 다른 프로세스(또는 직전 자기 선점)가 최근 이 발화를 처리했으면 포기.
+    if (now - gLastPeerClaim < kPeerClaimWindow) {
+        NSLog(@"[SiriGemini] skip: utterance claimed %.1fs ago", now - gLastPeerClaim);
+        return NO;
+    }
+
     NSString *cleaned = SiriGeminiCleanText(recognizedText);
     if (gKeyword.length == 0) return YES;   // 키워드 미설정 → 전체 가로챔
 
@@ -88,7 +105,6 @@ static BOOL SiriGeminiShouldIntercept(NSString *recognizedText) {
     if ([cleaned.lowercaseString containsString:kw.lowercaseString] ||
         [recognizedText.lowercaseString containsString:kw.lowercaseString]) {
         // 파생 가드 (기존 스로틀 보존): 동일 발화 중복 dispatch 및 고빈도 호출 방지.
-        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
         if (now - gLastDispatchTime < kMinDispatchInterval) return NO;
         return YES;
     }
@@ -132,6 +148,30 @@ static void SiriGeminiSpeak(NSString *text) {
     }
 }
 
+static void SiriGeminiPostClaim(void) {
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         SiriGeminiClaimNotification,
+                                         NULL,
+                                         NULL,
+                                         true);
+}
+
+// 이 발화를 현재 프로세스가 처리했음을 기록하고 다른 프로세스에 브로드캐스트한다.
+static void SiriGeminiClaimThisUtterance(void) {
+    gLastDispatchTime = [[NSDate date] timeIntervalSince1970];
+    gLastPeerClaim = gLastDispatchTime;
+    SiriGeminiPostClaim();
+}
+
+static void SiriGeminiClaimObserverCallback(CFNotificationCenterRef center,
+                                            void *observer,
+                                            CFStringRef name,
+                                            const void *object,
+                                            CFDictionaryRef userInfo) {
+    gLastPeerClaim = [[NSDate date] timeIntervalSince1970];
+    NSLog(@"[SiriGemini] utterance claimed by another process -> skipping this window");
+}
+
 // Forward declarations — 실제 private 헤더가 없으므로 respondsToSelector로 검증.
 // 시그니처는 HYPOTHESIS이며, %orig 호출 시 원래 인자 타입을 그대로 전달한다.
 @interface AFConnection : NSObject
@@ -141,59 +181,219 @@ static void SiriGeminiSpeak(NSString *text) {
 @interface SAUIAssistantUtteranceView : UIView  // HYPOTHESIS
 @end
 
-// SASSpeechRecognized 파서.
-// 경로: speechRecognized.recognition → .phrases[] → .tokens[] → .text 결합.
-// 근거: SiriPlus.dylib 역공학 분석(오케스트레이터 제공) — 기기 실측 검증은 아직 없음
-// (EXTERNALLY-SOURCED HYPOTHESIS). KVC 미준수 키 접근 시 예외 → @catch 후 nil.
-static NSString *SiriGeminiExtractRecognizedText(id speechRecognized) {
-    if (!speechRecognized) return nil;
-    if ([speechRecognized isKindOfClass:[NSString class]]) return speechRecognized;
+// SASSpeechRecognized 파서 ( 전면 강화 ).
+// 기존 구현은 KVC 경로 실패 시 조용히 nil을 반환했고, 그 결과 훅의
+// `if (recognizedText && SiriGeminiShouldIntercept(...))` 가 false가 되어 %orig(기본 Siri)가 실행됐다.
+// 이제 복원 경로를 다중으로 탐색하고, 최후에 description 기반 정규식/단어 폴백까지 사용하며,
+// 그래도 실패하면 클래스명을 기록해 훅이 음성 진단을 내고 %orig를 차단할 수 있게 한다.
+// (경로·셀렉터 이름은 여전히 EXTERNALLY-SOURCED HYPOTHESIS이며, 기기 로그로 확정 예정.)
 
+static NSString *gLastExtractFailClass = nil;   // 복원 실패가 확정된 객체의 클래스명(진단용)
+
+static id SiriGeminiRawValue(id obj, NSString *key) {
+    if (!obj || key.length == 0) return nil;
+    SEL sel = sel_registerName([key UTF8String]);
+    if (![obj respondsToSelector:sel]) return nil;
     @try {
-        id recognition = nil;
-        if ([speechRecognized respondsToSelector:@selector(recognition)]) {
-            recognition = [speechRecognized valueForKey:@"recognition"];
+        return [obj valueForKey:key];
+    } @catch (NSException *e) {
+        return nil;
+    }
+}
+
+static NSString *SiriGeminiStringValue(id obj, NSString *key) {
+    id value = SiriGeminiRawValue(obj, key);
+    if ([value isKindOfClass:[NSString class]]) return (NSString *)value;
+    return nil;
+}
+
+static NSString *SiriGeminiLongest(NSArray<NSString *> *items) {
+    NSString *best = nil;
+    for (NSString *s in items) {
+        if (![s isKindOfClass:[NSString class]] || s.length == 0) continue;
+        if (!best || s.length > best.length) best = s;
+    }
+    return best;
+}
+
+static void SiriGeminiAppendPiece(NSMutableString *dst, NSString *piece) {
+    if (![piece isKindOfClass:[NSString class]] || piece.length == 0) return;
+    if (dst.length > 0) [dst appendString:@" "];
+    [dst appendString:piece];
+}
+
+// phrases[] → tokens[].text, 실패 시 phrase.text. 공백으로 이어 붙인다.
+static NSString *SiriGeminiPhrasesText(id phrasesObj) {
+    if (![phrasesObj isKindOfClass:[NSArray class]]) return nil;
+
+    NSMutableString *full = [NSMutableString string];
+    for (id phrase in (NSArray *)phrasesObj) {
+        NSArray *tokens = nil;
+        id tval = SiriGeminiRawValue(phrase, @"tokens");
+        if ([tval isKindOfClass:[NSArray class]]) tokens = (NSArray *)tval;
+
+        BOOL appendedToken = NO;
+        for (id token in tokens) {
+            NSString *tokenText = SiriGeminiStringValue(token, @"text");
+            if (tokenText.length > 0) {
+                SiriGeminiAppendPiece(full, tokenText);
+                appendedToken = YES;
+            }
+        }
+        if (!appendedToken) {
+            SiriGeminiAppendPiece(full, SiriGeminiStringValue(phrase, @"text"));
+        }
+    }
+
+    if (full.length == 0) return nil;
+    return [full stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+static BOOL SiriGeminiIsSpeechLikeObject(id obj) {
+    if (!obj) return NO;
+    NSString *cn = NSStringFromClass([obj class]);
+    if (cn.length == 0) return NO;
+    NSArray<NSString *> *needles = @[@"Speech", @"Recogni", @"Transcription", @"Utterance"];
+    for (NSString *needle in needles) {
+        if ([cn rangeOfString:needle options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
+    }
+    return NO;
+}
+
+// 최후의 폴백 1: description 문자열에서 text=/phrase=/token= 값 추출 후 공백 결합.
+static NSString *SiriGeminiDescriptionRegexFallback(id obj) {
+    NSString *desc = [obj description];
+    if (desc.length == 0) return nil;
+
+    NSArray<NSString *> *patterns = @[
+        @"text\\s*=\\s*\"([^\"]+)\"",
+        @"phrase\\s*=\\s*\"([^\"]+)\"",
+        @"token\\s*=\\s*\"([^\"]+)\""
+    ];
+
+    NSMutableString *joined = [NSMutableString string];
+    for (NSString *pattern in patterns) {
+        NSRegularExpression *re = nil;
+        @try {
+            re = [NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil];
+        } @catch (NSException *e) {
+            re = nil;
+        }
+        if (!re) continue;
+
+        [re enumerateMatchesInString:desc options:0 range:NSMakeRange(0, desc.length)
+                          usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
+            NSString *s = [desc substringWithRange:[m rangeAtIndex:1]];
+            SiriGeminiAppendPiece(joined, s);
+        }];
+    }
+
+    if (joined.length == 0) return nil;
+    return [joined stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+// 최후의 폴백 2: description에서 사람이 읽을 만한 단어(한글/라틴 2자 이상)만 추려 결합.
+static NSString *SiriGeminiWordsFromDescription(id obj) {
+    NSString *desc = [obj description];
+    if (desc.length == 0) return nil;
+
+    NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:@"[가-힣A-Za-z]{2,}"
+                                                                       options:0 error:nil];
+    if (!re) return nil;
+
+    NSMutableString *joined = [NSMutableString string];
+    [re enumerateMatchesInString:desc options:0 range:NSMakeRange(0, desc.length)
+                      usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
+        NSString *s = [desc substringWithRange:m.range];
+        SiriGeminiAppendPiece(joined, s);
+    }];
+
+    if (joined.length == 0) return nil;
+    return [joined stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
+static NSString *SiriGeminiExtractRecognizedText(id speechRecognized) {
+    gLastExtractFailClass = nil;
+    if (!speechRecognized) return nil;
+    if ([speechRecognized isKindOfClass:[NSString class]]) return (NSString *)speechRecognized;
+
+    // 1) recognition.phrases / phrases 경로.
+    @try {
+        id phrasesObj = nil;
+        SEL recSel = sel_registerName("recognition");
+        if ([speechRecognized respondsToSelector:recSel]) {
+            id recognition = [speechRecognized valueForKey:@"recognition"];
+            if (recognition) {
+                SEL phSel = sel_registerName("phrases");
+                if ([recognition respondsToSelector:phSel]) phrasesObj = [recognition valueForKey:@"phrases"];
+            }
         } else {
-            recognition = speechRecognized;
+            SEL phSel = sel_registerName("phrases");
+            if ([speechRecognized respondsToSelector:phSel]) phrasesObj = [speechRecognized valueForKey:@"phrases"];
         }
 
-        NSArray *phrases = nil;
-        if ([recognition respondsToSelector:@selector(phrases)]) {
-            phrases = [recognition valueForKey:@"phrases"];
-        }
-
-        if (phrases && [phrases isKindOfClass:[NSArray class]]) {
-            NSMutableString *fullText = [NSMutableString string];
-            for (id phrase in phrases) {
-                NSArray *tokens = nil;
-                if ([phrase respondsToSelector:@selector(tokens)]) {
-                    tokens = [phrase valueForKey:@"tokens"];
-                }
-                if (tokens && [tokens isKindOfClass:[NSArray class]]) {
-                    for (id token in tokens) {
-                        NSString *tokenText = nil;
-                        if ([token respondsToSelector:@selector(text)]) {
-                            tokenText = [token valueForKey:@"text"];
-                        }
-                        if (tokenText.length > 0) {
-                            if (fullText.length > 0) [fullText appendString:@" "];
-                            [fullText appendString:tokenText];
-                        }
-                    }
-                }
-            }
-            if (fullText.length > 0) {
-                return [fullText stringByTrimmingCharactersInSet:
-                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            }
+        NSString *fromPhrases = SiriGeminiPhrasesText(phrasesObj);
+        if (fromPhrases.length > 0) {
+            NSLog(@"[SiriGemini] text via phrases path (len=%lu)", (unsigned long)fromPhrases.length);
+            return fromPhrases;
         }
     } @catch (NSException *e) {
-        NSLog(@"[SiriGemini] SASSpeechRecognized parse failed: %@", e);
+        NSLog(@"[SiriGemini] phrases path failed: %@", e);
     }
-    // 진단용: 파싱 실패 시 클래스명 기록 (다음 반복의 단서).
-    NSLog(@"[SiriGemini] unparsed recognition class: %@",
-          NSStringFromClass([speechRecognized class]));
+
+    // 2) 직접 텍스트 셀렉터/KVC 키 다중 탐색 → 가장 긴 문자열 채택.
+    NSArray<NSString *> *keys = @[@"text", @"transcription", @"bestTranscription", @"bestText", @"recognizedText"];
+    NSMutableArray<NSString *> *direct = [NSMutableArray array];
+    for (NSString *key in keys) {
+        NSString *v = SiriGeminiStringValue(speechRecognized, key);
+        if (v.length > 0) [direct addObject:v];
+    }
+    NSString *bestDirect = SiriGeminiLongest(direct);
+    if (bestDirect.length > 0) {
+        NSLog(@"[SiriGemini] text via direct selector (len=%lu)", (unsigned long)bestDirect.length);
+        return bestDirect;
+    }
+
+    // 3) description 정규식 폴백.
+    NSString *fromRegex = SiriGeminiDescriptionRegexFallback(speechRecognized);
+    if (fromRegex.length > 0) {
+        NSLog(@"[SiriGemini] text via description regex fallback (len=%lu)", (unsigned long)fromRegex.length);
+        return fromRegex;
+    }
+
+    // 4) description 단어 추출 폴백.
+    NSString *fromWords = SiriGeminiWordsFromDescription(speechRecognized);
+    if (fromWords.length > 0) {
+        NSLog(@"[SiriGemini] text via description word fallback (len=%lu)", (unsigned long)fromWords.length);
+        return fromWords;
+    }
+
+    // 실패 확정: 진단 정보를 남긴다(훅이 음성 피드백 후 %orig를 차단하도록 사용).
+    gLastExtractFailClass = NSStringFromClass([speechRecognized class]);
+    NSLog(@"[SiriGemini] ALL text extraction paths failed, class: %@", gLastExtractFailClass);
     return nil;
+}
+
+// 복원 실패 진단을 음성으로 내고 기본 Siri(%orig)로 빠져나가지 않게 한다.
+static BOOL SiriGeminiHandleExtractionFailure(id recognitionObject) {
+    if (gLastExtractFailClass.length == 0) return NO;          // 실패 확정 아님(예: nil 입력)
+    if (!SiriGeminiIsSpeechLikeObject(recognitionObject)) return NO;
+    if (gKeyword.length > 0) return NO;   // 키워드 설정 상태에서는 무관 발화를 가로채지 않는다
+    if (!gEnabled || gInGeminiCallback) return NO;
+
+    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+    if (now - gLastDispatchTime < kMinDispatchInterval || now - gLastPeerClaim < kPeerClaimWindow) {
+        NSLog(@"[SiriGemini] extraction-failure diagnostics throttled (peer or local)");
+        return YES;   // %orig는 차단하되 음성 중복은 방지
+    }
+    gLastDispatchTime = now;
+    SiriGeminiPostClaim();   // 진단음을 냈다는 것도 다른 프로세스에 알린다(중복 음성 방지)
+
+    NSString *msg = [NSString stringWithFormat:@"음성이 인식되었으나 텍스트 복원에 실패했습니다: %@",
+                     gLastExtractFailClass];
+    NSLog(@"[SiriGemini] extraction failure diagnostics: %@", msg);
+    SiriGeminiSpeak(msg);
+    return YES;   // %orig 차단 → 기본 시리가 대답하지 못하게 하고 진단음 유지
 }
 
 %group SiriGeminiAFConnection
@@ -202,13 +402,14 @@ static NSString *SiriGeminiExtractRecognizedText(id speechRecognized) {
 
 // HYPOTHESIS: Siri 음성 인식 콜백. 실제 시그니처는 기기 class-dump/Frida로 확정 필요.
 - (void)_tellSpeechDelegateSpeechRecognized:(id)recognition {
+    NSLog(@"[SiriGemini] HOOK FIRED in process %@!", [NSProcessInfo processInfo].processName);
     NSLog(@"[SiriGemini] Raw speech object: %@", [recognition class]);
     NSString *recognizedText = SiriGeminiExtractRecognizedText(recognition);
     NSLog(@"[SiriGemini] Extracted text: '%@' (enabled: %d, keyword: '%@')",
           recognizedText, gEnabled, gKeyword);
 
     if (recognizedText && SiriGeminiShouldIntercept(recognizedText)) {
-        gLastDispatchTime = [[NSDate date] timeIntervalSince1970];
+        SiriGeminiClaimThisUtterance();
         NSString *question = SiriGeminiStripKeyword(recognizedText);
         NSLog(@"[SiriGemini] intercept: %@", question);
         gInGeminiCallback = YES;
@@ -228,6 +429,21 @@ static NSString *SiriGeminiExtractRecognizedText(id speechRecognized) {
             // (키워드 매칭 시에만 해당. 폴백이 필요하면 2단계에서 %orig 호출 정책 확정.)
         }];
         return;  // %orig 생략 = 기존 음성 처리 가로챔
+    }
+
+    // 텍스트 복원이 모든 경로를 통해 실패한 경우: 진단음을 내고 기본 Siri로 넘기지 않는다.
+    if (SiriGeminiHandleExtractionFailure(recognition)) {
+        return;
+    }
+
+    // 최근(창 내) 다른 프로세스/자기 선점이 있으면 기본 Siri도 억제한다.
+    // (키워드 미설정 = 전체 가로챔 모드에서만 적용. 다중 인젝션 환경의 중복 답변 방지 의도.)
+    if (gKeyword.length == 0 && gLastPeerClaim > 0) {
+        NSTimeInterval since = [[NSDate date] timeIntervalSince1970] - gLastPeerClaim;
+        if (since < kPeerClaimWindow) {
+            NSLog(@"[SiriGemini] suppress orig: utterance handled %.1fs ago", since);
+            return;
+        }
     }
 
     %orig;
@@ -291,6 +507,13 @@ static void SiriGeminiSettingsChangedCallback(CFNotificationCenterRef center,
                                         NULL,
                                         SiriGeminiSettingsChangedCallback,
                                         SiriGeminiChangedNotification,
+                                        NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+        // 크로스프로세스 선점(중복 답변 방지) 알림 수신.
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        NULL,
+                                        SiriGeminiClaimObserverCallback,
+                                        SiriGeminiClaimNotification,
                                         NULL,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         SiriGeminiReloadSettings();
