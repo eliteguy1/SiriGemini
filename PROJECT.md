@@ -13,7 +13,7 @@
 * **지원 아키텍처:** `arm64`, `arm64e`
 * **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-1+debug` (Theos debug suffix)
 * **프로젝트 상태:** 2단계 RootHide 빌드 성공 (2026-10-13), runtime 미검증
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-1+debug_iphoneos-arm64e.deb` (23,418 bytes, SHA256 `ea326efd…f782`)
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-2+debug_iphoneos-arm64e.deb` (쿠키 개선판, SHA256 `9d642445…18df17`)
 
 ## 2. 핵심 컨셉
 
@@ -47,7 +47,8 @@ sirigemini\
 | 버전 | 일자 | 변경 내역 | 결과 |
 | :--- | :--- | :--- | :--- |
 | `1.0.0` | 2026-10-13 | 1단계 스켈레톤 (Tweak.x, GeminiWebClient, Preferences, Makefile, control) | 소스 작성 완료 |
-| `1.0.0-1+debug` | 2026-10-13 | 2단계 RootHide 빌드 성공 (arm64+arm64e, .jbroot install_name, 7단계 검증 중 6/7 통과·ldid 무엔티틀 정상) — 수정 2건: AVFoundation import 추가, AssistantServices 링크 제거 | 빌드 성공, SHA256 로컬/원격 일치 |
+| `1.0.0-1+debug` | 2026-10-13 | 2단계 RootHide 빌드 성공 (arm64+arm64e, .jbroot install_name) — 수정 2건: AVFoundation import 추가, AssistantServices 링크 제거 | 빌드 성공, SHA256 로컬/원격 일치 |
+| `1.0.0-2+debug` | 2026-10-13 | 쿠키 추출 개선 (gemini 초기 URL, 전체 cookieString 저장/주입, 핵심 4종 중 1개 판정) + 재빌드 성공 | 빌드 성공, SHA256 로컬/원격 일치 |
 
 ## 5. 검증 상태 (Fact-Check Gate)
 

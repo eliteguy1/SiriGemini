@@ -6,6 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 extern NSString * const SiriGeminiPrefsPath;
 extern NSString * const SiriGeminiCookie1PSIDKey;    // __Secure-1PSID   (UNVERIFIED recall — 런타임 검증 필요)
 extern NSString * const SiriGeminiCookie1PSIDTSKey;  // __Secure-1PSIDTS (UNVERIFIED recall — 런타임 검증 필요)
+extern NSString * const SiriGeminiCookieStringKey;   // cookieString — 전체 "name=value; ..." (601078 추가)
 
 @interface GeminiWebClient : NSObject
 

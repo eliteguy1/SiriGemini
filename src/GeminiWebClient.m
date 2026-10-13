@@ -3,6 +3,7 @@
 NSString * const SiriGeminiPrefsPath = @"/var/mobile/Library/Preferences/com.csw.sirigemini.plist";
 NSString * const SiriGeminiCookie1PSIDKey = @"__Secure-1PSID";
 NSString * const SiriGeminiCookie1PSIDTSKey = @"__Secure-1PSIDTS";
+NSString * const SiriGeminiCookieStringKey = @"cookieString";
 
 // NOTE(HYPOTHESIS): Gemini Web의 실제 질의 RPC는 batchexecute 계열 POST이며
 // 파라미터/응답 포맷은 런타임 캡처로 확정해야 한다. 아래 구현은 1단계 스켈레톤으로,
@@ -33,9 +34,10 @@ static NSString * const kGeminiBaseURLString = @"https://gemini.google.com";
 
 - (BOOL)hasLoginCookies {
     NSDictionary *prefs = [self storedPrefs];
+    // 601078 완화: 전체 쿠키 문자열 또는 1PSID 중 하나라도 있으면 로그인으로 판정.
+    NSString *cookieString = prefs[SiriGeminiCookieStringKey];
     NSString *psid = prefs[SiriGeminiCookie1PSIDKey];
-    NSString *psidts = prefs[SiriGeminiCookie1PSIDTSKey];
-    return (psid.length > 0 && psidts.length > 0);
+    return (cookieString.length > 0 || psid.length > 0);
 }
 
 - (void)sendQuestion:(NSString *)question
@@ -52,9 +54,18 @@ static NSString * const kGeminiBaseURLString = @"https://gemini.google.com";
     }
 
     NSDictionary *prefs = [self storedPrefs];
-    NSString *psid = prefs[SiriGeminiCookie1PSIDKey];
-    NSString *psidts = prefs[SiriGeminiCookie1PSIDTSKey];
-    if (psid.length == 0 || psidts.length == 0) {
+    // 601078: 전체 쿠키 문자열 우선 주입 (401/403 방지). 없으면 기존 2쿠키 방식으로 폴백.
+    NSString *cookieHeader = prefs[SiriGeminiCookieStringKey];
+    if (cookieHeader.length == 0) {
+        NSString *psid = prefs[SiriGeminiCookie1PSIDKey];
+        NSString *psidts = prefs[SiriGeminiCookie1PSIDTSKey];
+        if (psid.length > 0 && psidts.length > 0) {
+            cookieHeader = [NSString stringWithFormat:@"%@=%@; %@=%@;",
+                            SiriGeminiCookie1PSIDKey, psid,
+                            SiriGeminiCookie1PSIDTSKey, psidts];
+        }
+    }
+    if (cookieHeader.length == 0) {
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 completion(nil, [NSError errorWithDomain:@"SiriGemini"
@@ -66,9 +77,6 @@ static NSString * const kGeminiBaseURLString = @"https://gemini.google.com";
     }
 
     // Cookie 헤더 주입. HttpOnly/Secure 쿠키도 헤더 방식으로는 전송 가능.
-    NSString *cookieHeader = [NSString stringWithFormat:@"%@=%@; %@=%@;",
-                              SiriGeminiCookie1PSIDKey, psid,
-                              SiriGeminiCookie1PSIDTSKey, psidts];
 
     NSURL *url = [NSURL URLWithString:kGeminiBaseURLString];
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
