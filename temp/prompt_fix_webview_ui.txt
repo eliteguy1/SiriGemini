@@ -1,0 +1,56 @@
+# 긴급 UI/WebView 수정 지시: 로그인 화면 미표시 및 투명 배경 버그 해결
+
+## 1. 스크린샷 기반 정밀 문제 진단
+사용자 스크린샷 확인 결과:
+- 얼럿: `[수집: NID(.google.com), COMPASS(.gemini.google.com), _gcl_au, _ga...]` (로그인되지 않은 게스트 쿠키만 수집됨)
+- 배경: WebView가 전혀 표시되지 않고 뒤의 시스템 화면이 투명하게 비침.
+
+### 근본 원인:
+1. **`LoginWebViewController` 프레임 및 오토레이아웃 결함**:
+   - `viewDidLoad` 시점에 `self.view.bounds`는 0x0일 수 있음.
+   - `translatesAutoresizingMaskIntoConstraints = NO` 및 Safe Area 제약 조건(`topAnchor`, `bottomAnchor`, `leadingAnchor`, `trailingAnchor`)이 누락되어 WKWebView 크기가 0x0으로 렌더링되지 않음.
+2. **배경색 미지정**:
+   - `self.view.backgroundColor = [UIColor systemBackgroundColor];`가 없어 뷰가 투명하여 뒤 배경이 그대로 비침.
+3. **Settings 네비게이션 스택 분리 (모달 띄우기)**:
+   - `RootListController`에서 `pushViewController` 대신 `UINavigationController`로 감싸서 `presentViewController:animated:completion:` 모달로 띄워야 안전함. 좌측에 "취소", 우측에 "완료" 바 버튼 배치.
+4. **Google 로그인 차단(disallowed_useragent) 방지**:
+   - 기본 WKWebView User-Agent는 Google이 "보안상 안전하지 않은 브라우저"로 판단하여 로그인을 차단할 수 있음.
+   - `self.webView.customUserAgent = @"Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";` 필수 설정.
+5. **로딩 인디케이터**:
+   - `UIActivityIndicatorView`를 중앙에 배치하여 웹페이지 로딩 상태를 사용자에게 명확히 피드백.
+
+---
+
+## 2. 구체적 수정 지시
+
+### A. `src/Preferences/RootListController.m`:
+```objc
+- (void)openGoogleLogin:(id)sender {
+    SiriGeminiLoginWebViewController *vc = [[SiriGeminiLoginWebViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet; // or UIModalPresentationFullScreen
+    [self presentViewController:nav animated:YES completion:nil];
+}
+```
+
+### B. `src/Preferences/LoginWebViewController.m`:
+1. `viewDidLoad`:
+   - `self.view.backgroundColor = [UIColor systemBackgroundColor];`
+   - `self.title = @"Google 로그인";`
+   - 좌측 바버튼: `"취소"` -> `[self dismissViewControllerAnimated:YES completion:nil]`
+   - 우측 바버튼: `"완료"` -> `saveCookiesAndFinish` (성공 시 얼럿 닫힘 후 `dismissViewControllerAnimated:YES`)
+   - `WKWebViewConfiguration`:
+     - `self.webView.customUserAgent = @"Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";`
+   - `self.webView.translatesAutoresizingMaskIntoConstraints = NO;`
+   - Safe Area 오토레이아웃 제약조건(`topAnchor`, `bottomAnchor`, `leadingAnchor`, `trailingAnchor`) `activateConstraints:` 적용.
+   - `UIActivityIndicatorView` 추가 (`didStartProvisionalNavigation` 시 start, `didFinishNavigation` / `didFailNavigation` 시 stop).
+
+2. `saveCookiesAndFinish`:
+   - 로그인 쿠키 정상 저장 시 얼럿 확인을 누르면 `[self dismissViewControllerAnimated:YES completion:nil];` 호출하여 모달 자동 닫기.
+
+### C. macOS VM 동기화 및 재빌드:
+- 로컬 수정 파일 VM(`~/build_sirigemini`)으로 scp 전송.
+- `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+- 산출물 deb (`1.0.0-3+debug`) 회수.
+
+수정 및 빌드 완료 후 6대 양식에 맞춰 보고하세요.

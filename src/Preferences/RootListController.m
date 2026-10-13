@@ -11,8 +11,11 @@
 }
 
 - (void)openGoogleLogin:(id)sender {
+    // 601078-UI: Settings 네비게이션 스택 분리 — 모달로 띄워 안전하게 표시.
     SiriGeminiLoginWebViewController *vc = [[SiriGeminiLoginWebViewController alloc] init];
-    [self.navigationController pushViewController:vc animated:YES];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationPageSheet;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)viewDidLoad {
