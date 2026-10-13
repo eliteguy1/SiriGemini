@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
+#import <CoreFoundation/CFUserNotification.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -145,6 +147,45 @@ static void SiriGeminiSpeak(NSString *text) {
                                                             object:text];
     } @catch (NSException *e) {
         NSLog(@"[SiriGemini] Speak failed: %@", e);
+    }
+}
+
+// ============================================================================
+// 화면 진단 HUD (-9): 트윅 주입/훅 설치 여부를 눈으로 즉시 확인하게 한다.
+// kSiriGeminiBuildTag는 수동 문자열이므로 자동 증가하는 Theos build number와 맞도록 갱신해야 한다.
+static NSString * const kSiriGeminiBuildTag = @"1.0.0-9";
+
+static void SiriGeminiShowAlert(NSString *title, NSString *message) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            AudioServicesPlaySystemSound(1003);   // 팝업과 함께 햅틱/사운드 피드백
+            CFUserNotificationDisplayAlert(
+                0,
+                kCFUserNotificationPlainAlertLevel,
+                NULL, NULL, NULL,
+                (__bridge CFStringRef)title,
+                (__bridge CFStringRef)message,
+                CFSTR("확인"),
+                NULL,
+                NULL,
+                NULL);
+        } @catch (NSException *e) {
+            NSLog(@"[SiriGemini] alert failed: %@", e);
+        }
+    });
+}
+
+// 로드 상태를 보고한다. SpringBoard에서는 화면 팝업, 모든 프로세스에서 로그를 남긴다(지시 A/B).
+static void SiriGeminiReportLoad(void) {
+    NSString *procName = [NSProcessInfo processInfo].processName;
+    Class afClass = objc_getClass("AFConnection");
+    NSLog(@"[SiriGemini] ctor loaded in process: %@ (AFConnection: %d)", procName, afClass ? 1 : 0);
+
+    if ([procName isEqualToString:@"SpringBoard"]) {
+        NSString *title = [NSString stringWithFormat:@"SiriGemini v%@", kSiriGeminiBuildTag];
+        NSString *msg = [NSString stringWithFormat:@"SpringBoard 주입 성공!\n프로세스: %@\nAFConnection: %@",
+                         procName, afClass ? @"발견됨 (후킹 설치 중)" : @"미발견 (지연 바인딩 대기)"];
+        SiriGeminiShowAlert(title, msg);
     }
 }
 
@@ -396,13 +437,16 @@ static BOOL SiriGeminiHandleExtractionFailure(id recognitionObject) {
     return YES;   // %orig 차단 → 기본 시리가 대답하지 못하게 하고 진단음 유지
 }
 
-%group SiriGeminiAFConnection
+// 표준 Logos 직접 후킹(-9): %group + 조건부 %init 대신 최상위 %hook를 사용한다.
+// 주의: logos가 생성하는 바인딩 코드에는 클래스 nil 가드가 없으므로(본 세션 생성 코드 확인),
+// %init(_ungrouped) 호출은 AFConnection이 로드된 뒤에 수행해야 한다(%ctor + 지연 재시도).
 
 %hook AFConnection
 
 // HYPOTHESIS: Siri 음성 인식 콜백. 실제 시그니처는 기기 class-dump/Frida로 확정 필요.
 - (void)_tellSpeechDelegateSpeechRecognized:(id)recognition {
     NSLog(@"[SiriGemini] HOOK FIRED in process %@!", [NSProcessInfo processInfo].processName);
+    AudioServicesPlaySystemSound(1519);   // 인식 반응을 손으로 즉시 체감(지시 C)
     NSLog(@"[SiriGemini] Raw speech object: %@", [recognition class]);
     NSString *recognizedText = SiriGeminiExtractRecognizedText(recognition);
     NSLog(@"[SiriGemini] Extracted text: '%@' (enabled: %d, keyword: '%@')",
@@ -451,8 +495,6 @@ static BOOL SiriGeminiHandleExtractionFailure(id recognitionObject) {
 
 %end  // AFConnection
 
-%end  // group SiriGeminiAFConnection
-
 %group SiriGeminiUtteranceView
 
 %hook SAUIAssistantUtteranceView
@@ -497,6 +539,33 @@ static void SiriGeminiSettingsChangedCallback(CFNotificationCenterRef center,
     SiriGeminiReloadSettings();
 }
 
+// ============================================================================
+// -9: 표준 직접 훅(-ungrouped)의 바인딩 설치 제어.
+// logos가 생성한 AFConnection 바인딩 코드에는 클래스 nil 가드가 없으므로(생성 코드 관찰),
+// %init(_ungrouped)는 클래스가 로드된 뒤에만 호출한다. 프레임워크 지연 로드를 대비해
+// 앱 런칭 완료 시점에도 재시도한다(지시 3).
+static BOOL gAFHookInstalled = NO;
+
+static void SiriGeminiInstallAFHook(void) {
+    if (gAFHookInstalled) return;
+
+    Class afConn = objc_getClass("AFConnection");
+    if (!afConn) {
+        // 아직 로드 전이므로 private 프레임워크를 강제로 로드해본 뒤 다시 확인한다.
+        dlopen("/System/Library/PrivateFrameworks/AssistantServices.framework/AssistantServices", RTLD_NOW);
+        afConn = objc_getClass("AFConnection");
+    }
+
+    if (!afConn) {
+        NSLog(@"[SiriGemini] AFConnection not loaded yet -> hook binding deferred");
+        return;
+    }
+
+    %init(_ungrouped);
+    gAFHookInstalled = YES;
+    NSLog(@"[SiriGemini] AFConnection hook INSTALLED (direct logos hook, ungrouped)");
+}
+
 %ctor {
     @autoreleasepool {
         // AFConnection/SASSpeechRecognized 클래스가 %ctor 시점에 로드되도록
@@ -518,16 +587,9 @@ static void SiriGeminiSettingsChangedCallback(CFNotificationCenterRef center,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         SiriGeminiReloadSettings();
 
-        // AFConnection 클래스가 존재하면 무조건 훅 활성화.
-        // (이전 구현의 instancesRespondToSelector: 검사는 비공개 셀렉터/동적 로딩 환경에서
-        //  NO를 반환해 %init 자체가 건너뛰어져 훅이 통째로 꺼지는 원인이 되었다.)
-        Class afConn = objc_getClass("AFConnection");
-        if (afConn) {
-            %init(SiriGeminiAFConnection);
-            NSLog(@"[SiriGemini] AFConnection hook FORCE-INITIALIZED");
-        } else {
-            NSLog(@"[SiriGemini] AFConnection class NOT FOUND");
-        }
+        // -9: %group 조건부 init 대신 표준 직접 훅 바인딩을 시도하고, 결과를 화면 팝업으로 보고한다.
+        SiriGeminiInstallAFHook();
+        SiriGeminiReportLoad();
 
         Class uttClass = objc_getClass("SAUIAssistantUtteranceView");
         if (uttClass) {
@@ -536,5 +598,15 @@ static void SiriGeminiSettingsChangedCallback(CFNotificationCenterRef center,
         } else {
             NSLog(@"[SiriGemini] SAUIAssistantUtteranceView class NOT FOUND");
         }
+
+        // 지시 3: 프레임워크가 늦게 로드되는 환경을 대비한 2차 바인딩 안전장치.
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidFinishLaunchingNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *note) {
+            SiriGeminiReloadSettings();
+            SiriGeminiInstallAFHook();
+            NSLog(@"[SiriGemini] didFinishLaunching: settings reloaded, AF hook installed=%d", gAFHookInstalled ? 1 : 0);
+        }];
     }
 }

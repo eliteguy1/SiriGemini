@@ -11,9 +11,9 @@
 * **GitHub:** `eliteguy1/SiriGemini` (remote 설정 확인됨 / push 및 저장소 존재 여부는 실측 미확인)
 * **타겟 환경:** iOS 18.7.1 / RootHide (Dopamine 3) / `iphoneos-arm64e`
 * **지원 아키텍처:** `arm64`, `arm64e`
-* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-8+debug` (Theos debug build number)
-* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성 피드백(-7), **음성 텍스트 복원 다층화 + 필터 확장 + 크로스프로세스 선점(-8)** 반영 (2026-10-13). 원인 1(nil 반환으로 %orig 통과)은 `-7` 소스에서 code-level로 확인되어 수정 완료. 원인 2(보조 프로세스에서 훅 호출)는 계측만 추가(`HOOK FIRED in process …`) — 기기 로그 미검증
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-8+debug_iphoneos-arm64e.deb` (SHA256 `374c7a0b…18877`, 로컬/VM 일치)
+* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-9+debug` (Theos debug build number)
+* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성 피드백(-7), 텍스트 복원 다층화 + 필터 확장 + 크로스프로세스 선점(-8), **진단 HUD(팝업/햅틱) + AFConnection 표준 직접 훅(-9)** 반영 (2026-10-13). 원인은 미규명: `-8`과 `-9`의 바인딩 경로는 사실상 동일하므로(생성 코드 실측) HUD 팝업으로 "주입 실패 vs 클래스 미발견"을 분리 판정해야 함
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-9+debug_iphoneos-arm64e.deb` (SHA256 `f6780d47…19f5e9`, 로컬/VM 일치)
 
 ## 2. 핵심 컨셉
 
@@ -59,6 +59,8 @@ sirigemini\
 
 | `1.0.0-8+debug` | 2026-10-13 | 음성 텍스트 복원 다층화(phrases → 직접 키 5종(text/transcription/bestTranscription/bestText/recognizedText) → description 정규식(`text=`/`phrase=`/`token=`) → description 단어추출 `[가-힣A-Za-z]{2,}`), 전 경로 실패 시 클래스명 기록 + 진단 음성(`음성이 인식되었으나 텍스트 복원에 실패했습니다: <class>`) 후 `%orig` 차단. 필터에 `com.apple.siri`, `com.apple.SiriViewService` 추가. 훅 진입 로그 `HOOK FIRED in process …`. 파생: Darwin 알림 `com.csw.sirigemini.claimed` 선점으로 다중 인젝션 중복 답변 억제(3초 창). 오류 1건(unused function → 헬퍼 미연결) 수정 | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`374c7a0b…18877`), 런타임 미검증 |
 
+| `1.0.0-9+debug` | 2026-10-13 | 진단 HUD 추가: `CFUserNotificationDisplayAlert`(SpringBoard 팝업 `SiriGemini v1.0.0-9` / 프로세스명 / AFConnection 발견 여부) + 사운드 1003, 훅 진입 시 햅틱 `AudioServicesPlaySystemSound(1519)`. AFConnection을 `%group` 없이 최상위 `%hook`로 전환하고 `%init(_ungrouped)` 호출을 자체 nil 검사(`SiriGeminiInstallAFHook`) 뒤로 배치, `UIApplicationDidFinishLaunchingNotification`에서 설정 리로드+바인딩 재시도. `SAUIAssistantUtteranceView`는 클래스 부재 프로세스 크래시를 피해 `%group` 조건부 유지(의도적 편차) | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`f6780d47…19f5e9`), AudioToolbox 링크 확인(`otool -L`), 팝업·햅틱 런타임 미검증 |
+
 ## 5. 검증 상태 (Fact-Check Gate)
 
 | claim | type | verification source | status |
@@ -76,13 +78,19 @@ sirigemini\
 | `-7`까지 파서 실패 시 조용한 `nil` 반환 → 훅 조건 false → `%orig`(기본 Siri) 실행 | code state | `-7` `src/Tweak.x` 소스 검토: 성공 경로 외 끝의 `return nil;` 단일, 훅은 `if (recognizedText && …)` 구조 | VERIFIED (code-level) |
 | 다중 프로세스 동시 주입 시 동일 발화 중복 dispatch/중복 음성 | runtime behavior | 미측정. 필터 확장(-8)으로 파생된 위험 → Darwin 선점(3초 창)으로 완화 시도 | HYPOTHESIS |
 | `com.apple.siri`, `com.apple.SiriViewService` bundle ID의 실제 매칭 | external identifiers | 지시 recall 입력. plist가 패키지에 포함된 것(plutil)만 실측, 기기 주입/매칭 미확인 | UNVERIFIED (recall) / VERIFIED (패키징 포함) |
-| `logos.pl + clang -fsyntax-only`(vendor include, CydiaSubstrate 스텁)로 Tweak.x 사전 문법 검증 가능 | build methodology | VM 실측: `PROBE_OK` 후 `make package` 오류 0. 단 `-Werror,-Wunused-function`은 프로브에서 잡히지 않음(전체 빌드에서 발견) | VERIFIED (tool chain, 한계 기록) |
+| `logos.pl + clang -fsyntax-only`(vendor include, CydiaSubstrate 스텁)로 Tweak.x 사전 문법 검증 가능 | build methodology | VM 실측: `PROBE_OK` 후 `make package` 오류 0. `-Wunused-function -Werror=unused-function`을 프로브에 추가해 이전 실패 유형도 잡히도록 개선(-9 사이클 무오류) | VERIFIED (tool chain, 한계 기록) |
+| logos는 ungrouped `%init(_ungrouped)`를 호출 지점에 인라인 발행하며 nil 가드가 없고, 별도 자동 설치 생성자도 없다 | Logos/Theos 코드 생성 semantics | VM 실측: `/tmp/Tweak_pre.m` line 592(`{Class … = objc_getClass("AFConnection"); { MSHookMessageEx(…); }}`), `grep -c _logos_init` = 0, MSHookMessageEx 발생 지점 2곳뿐 | VERIFIED (code-level) |
+| "`%group`+조건부 `%init`(-8)이 훅 미설치의 원인" → 직접 훅 전환으로 해결된다 | root cause 주장 | 생성 코드 실측: -8과 -9 모두 "클래스 존재 시에만 바인딩" 동일 경로. 전환 자체의 동작 차이 없음 | DISPROVEN (as stated) / root cause OPEN ISSUE |
+| `CFUserNotificationDisplayAlert`·`AudioServicesPlaySystemSound` 심볼이 로드 시점에 해결 가능 | link/loader behavior | `otool -L .theos/obj/debug/arm64/SiriGemini.dylib`에 `AudioToolbox.framework` 링크 확인, CoreFoundation은 이미 링크 | VERIFIED (static) / 팝업 실제 표시는 OPEN |
+| 리스프링 후 SpringBoard에서 `SiriGemini v1.0.0-9` 팝업 표시, 발화 시 햅틱(1519) 발생 | runtime behavior | 기기 미테스트 | OPEN ISSUE |
 
 ## 6. 다음 단계 (OPEN ISSUES)
+
+0. **HUD로 원인 분리(-9 최우선):** 리스프링 후 팝업/진단 확인 → (a) 팝업 없음 = dylib 주입 자체 차단(필터/plutil·RootHide 허용 확인), (b) 팝업+`AFConnection: 발견됨` = 바인딩 시도됨 → 발화 시 햅틱/`HOOK FIRED` 로그로 셀렉터 유효성 판정, (c) 팝업+`미발견` = AssistantServices 지연/미로드. 상세 판정표: `docs/diagnostic-alert-and-direct-hook.md` §6
 
 1. 기기 로그로 훅 실제 진입 프로세스 확정: `HOOK FIRED in process <name>` (원인 2 검증).
 2. 복원 성공 경로 확인: `text via phrases path` / `via direct selector` / `via description regex fallback` / `via description word fallback`. 정규식·단어 폴백 결과이면 잡음 여부를 반드시 확인할 것. 실패 시 `ALL text extraction paths failed, class: <X>` → `<X>` 구조를 class-dump/Frida로 조사해 정확한 경로 추가.
 3. 다중 인젝션 동작 확인: `skip: utterance claimed …`, `suppress orig: utterance handled …` 빈도로 `kPeerClaimWindow = 3.0s` 적정성 판단(지연/누락 발생 시 조정).
 4. StreamGenerate 요청/응답 스키마·`bl` 값 확정(`SNlM0e acquired`, `StreamGenerate POST …`, `answer parsed`, `raw response head`) — 여전히 미검증.
-5. `-8` 포함 기기 설치·동작 테스트 미수행(설치는 사용자 수행/아이피 대기).
+5. `-9` 포함 기기 설치·동작 테스트 미수행(설치는 사용자 수행/아이피 대기). 팝업 미표시 시 설치 경로·필터 매칭부터 점검(`dpkg -l`, plist plutil, RootHide 금지 목록).
 6. Git: remote는 `https://github.com/eliteguy1/SiriGemini.git`로 설정돼 있고(`git remote -v` 실측) `-6/-7/-8` 변경분이 **미커밋**. 커밋·push는 사용자 명시 요청 시에만 수행한다.

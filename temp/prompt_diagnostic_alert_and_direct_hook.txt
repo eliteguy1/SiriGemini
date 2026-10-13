@@ -1,0 +1,70 @@
+# 긴급 진단 및 후킹 방식 전면 개편 지시: 기기 화면 로드 팝업(HUD) 및 표준 Logos 직접 후킹
+
+## 1. 현재 상황 및 핵심 문제 진단
+사용자가 새 deb 설치 후 시리를 호출했으나 진단 음성조차 전혀 나오지 않고 순정 시리가 응답함.
+➔ 이것은 **`SiriGemini.dylib`가 로드되지 않았거나, `%ctor`의 `objc_getClass` 조건부 검사 실패로 훅 자체가 아예 설치되지 않았음**을 의미함!
+
+이 문제를 100% 규명하기 위해:
+1. **기기 화면에 즉시 눈으로 볼 수 있는 시스템 팝업(`CFUserNotificationDisplayAlert`) 추가**:
+   - SpringBoard 기동 시 화면에 `"SiriGemini v1.0.0-9 활성화됨 (프로세스: %s, AFConnection: O/X)"` 팝업을 띄움.
+   - 만약 리스프링 후 이 팝업이 화면에 뜨면 -> 트윅 주입은 100% 성공이며 AFConnection 상태가 표시됨!
+   - 만약 리스프링 후에도 팝업이 안 뜨면 -> RootHide가 dylib 주입을 차단하고 있음을 즉시 규명 가능!
+2. **`%group` 조건부 `%init` 폐지 ➔ 표준 Logos 직접 후킹 (`%hook AFConnection`)**:
+   - `%group`으로 감싸고 `%ctor`에서 `objc_getClass` 검사 후 `%init`하던 방식을 버리고,
+   - Theos Logos 표준 방식대로 최상위에서 직접 `%hook AFConnection`을 선언하여 Theos 런타임이 안전하게 dynamic swizzling을 수행하도록 함.
+3. **`UIApplicationDidFinishLaunchingNotification` 2차 바인딩 안전장치**:
+   - 프레임워크가 늦게 로드되는 경우를 대비하여 앱 런칭 완료 시점에도 설정 리로드 및 훅 확인 수행.
+
+---
+
+## 2. 구체적 구현 (`src/Tweak.x`)
+
+### A. 화면 진단 알림 헬퍼 함수:
+```objc
+#import <AudioToolbox/AudioToolbox.h>
+
+static void SiriGeminiShowAlert(NSString *title, NSString *message) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        AudioServicesPlaySystemSound(1003); // 햅틱 피드백
+        CFUserNotificationDisplayAlert(
+            0,
+            kCFUserNotificationPlainAlertLevel,
+            NULL, NULL, NULL,
+            (__bridge CFStringRef)title,
+            (__bridge CFStringRef)message,
+            CFSTR("확인"), NULL, NULL,
+            NULL
+        );
+    });
+}
+```
+
+### B. `%ctor` 수정:
+```objc
+%ctor {
+    @autoreleasepool {
+        NSString *procName = [NSProcessInfo processInfo].processName;
+        NSLog(@"[SiriGemini] %ctor loaded in process: %@", procName);
+
+        // SpringBoard에서 로드된 경우 화면에 즉시 로드 확인 팝업 표시
+        if ([procName isEqualToString:@"SpringBoard"]) {
+            Class afClass = objc_getClass("AFConnection");
+            NSString *msg = [NSString stringWithFormat:@"SpringBoard 주입 성공!\nAFConnection: %@",
+                             afClass ? @"발견됨 (후킹 완료)" : @"미발견 (동적 대기 중)"];
+            SiriGeminiShowAlert(@"SiriGemini 런타임 진단", msg);
+        }
+
+        SiriGeminiReloadSettings();
+        %init(_ungrouped);
+    }
+}
+```
+
+### C. `AFConnection` 훅을 `%group` 없이 최상위 `%hook AFConnection`으로 직접 선언.
+- 기존의 모든 다층 텍스트 복원 로직 및 가로채기 유지.
+- `_tellSpeechDelegateSpeechRecognized:` 진입 시 햅틱 진동 `AudioServicesPlaySystemSound(1519);` 추가 (시리가 말을 들었을 때 트윅이 반응하는지 손으로 즉시 체감 가능!).
+
+### D. macOS VM 동기화, RootHide 재빌드 (`1.0.0-9+debug`), deb 회수:
+- `Tweak.x` VM으로 scp 전송.
+- `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+- 산출물 deb 회수 및 보고.
