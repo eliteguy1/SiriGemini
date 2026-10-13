@@ -1,0 +1,9 @@
+Package: com.csw.sirigemini
+Name: SiriGemini
+Depends: mobilesubstrate
+Description: Siri requests via Gemini Web (Google web-login cookie auth, no paid API key)
+Maintainer: csw
+Author: csw
+Section: Tweaks
+Architecture: iphoneos-arm64e
+Version: 1.0.0

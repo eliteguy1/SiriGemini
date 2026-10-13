@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>SiriGemini — Gemini Web 연동 (1단계 스켈레톤)</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.csw.sirigemini</string>
+			<key>key</key>
+			<string>enabled</string>
+			<key>label</key>
+			<string>Enabled</string>
+			<key>PostNotification</key>
+			<string>com.csw.sirigemini.settingschanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSEditTextCell</string>
+			<key>defaults</key>
+			<string>com.csw.sirigemini</string>
+			<key>key</key>
+			<string>keyword</string>
+			<key>label</key>
+			<string>Keyword (비우면 전체 가로챔)</string>
+			<key>placeholder</key>
+			<string>예: 젬아</string>
+			<key>PostNotification</key>
+			<string>com.csw.sirigemini.settingschanged</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>action</key>
+			<string>openGoogleLogin:</string>
+			<key>label</key>
+			<string>Google 로그인</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>footerText</key>
+			<string>로그인 버튼 → WebView에서 Google 로그인 → 우상단 완료. __Secure-1PSID / __Secure-1PSIDTS 쿠키가 저장됩니다. (1단계: 응답 파싱은 placeholder)</string>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>SiriGemini</string>
+</dict>
+</plist>
