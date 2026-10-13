@@ -11,9 +11,9 @@
 * **GitHub:** `eliteguy1/SiriGemini` (remote 설정 확인됨 / push 및 저장소 존재 여부는 실측 미확인)
 * **타겟 환경:** iOS 18.7.1 / RootHide (Dopamine 3) / `iphoneos-arm64e`
 * **지원 아키텍처:** `arm64`, `arm64e`
-* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-9+debug` (Theos debug build number)
-* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성 피드백(-7), 텍스트 복원 다층화 + 필터 확장 + 크로스프로세스 선점(-8), **진단 HUD(팝업/햅틱) + AFConnection 표준 직접 훅(-9)** 반영 (2026-10-13). 원인은 미규명: `-8`과 `-9`의 바인딩 경로는 사실상 동일하므로(생성 코드 실측) HUD 팝업으로 "주입 실패 vs 클래스 미발견"을 분리 판정해야 함
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-9+debug_iphoneos-arm64e.deb` (SHA256 `f6780d47…19f5e9`, 로컬/VM 일치)
+* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-10+debug` (Theos debug build number)
+* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성(-7), 텍스트 복원 다층화 + 필터 확장 + 크로스프로세스 선점(-8), 직접 훅 전환(-9), **핫픽스: `%ctor` 내 차단형 알림 제거(-10)** 반영 (2026-10-13). `-9`의 `CFUserNotificationDisplayAlert`(timeout=0)가 SpringBoard 부팅 중 메인 스레드를 막아 무한 리스프링을 일으켰음(Apple docs로 blocking semantics 확인, 크래시 자체는 기기 보고). 원인은 여전히 미규명 → 로그(`ctor loaded in process:`)로 판정 계속
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-10+debug_iphoneos-arm64e.deb` (SHA256 `192655ec…591fb5`, 로컬/VM 일치; dylib 내 `CFUserNotification` 심볼 0건, `_AudioServicesPlaySystemSound` 유지)
 
 ## 2. 핵심 컨셉
 
@@ -59,7 +59,9 @@ sirigemini\
 
 | `1.0.0-8+debug` | 2026-10-13 | 음성 텍스트 복원 다층화(phrases → 직접 키 5종(text/transcription/bestTranscription/bestText/recognizedText) → description 정규식(`text=`/`phrase=`/`token=`) → description 단어추출 `[가-힣A-Za-z]{2,}`), 전 경로 실패 시 클래스명 기록 + 진단 음성(`음성이 인식되었으나 텍스트 복원에 실패했습니다: <class>`) 후 `%orig` 차단. 필터에 `com.apple.siri`, `com.apple.SiriViewService` 추가. 훅 진입 로그 `HOOK FIRED in process …`. 파생: Darwin 알림 `com.csw.sirigemini.claimed` 선점으로 다중 인젝션 중복 답변 억제(3초 창). 오류 1건(unused function → 헬퍼 미연결) 수정 | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`374c7a0b…18877`), 런타임 미검증 |
 
-| `1.0.0-9+debug` | 2026-10-13 | 진단 HUD 추가: `CFUserNotificationDisplayAlert`(SpringBoard 팝업 `SiriGemini v1.0.0-9` / 프로세스명 / AFConnection 발견 여부) + 사운드 1003, 훅 진입 시 햅틱 `AudioServicesPlaySystemSound(1519)`. AFConnection을 `%group` 없이 최상위 `%hook`로 전환하고 `%init(_ungrouped)` 호출을 자체 nil 검사(`SiriGeminiInstallAFHook`) 뒤로 배치, `UIApplicationDidFinishLaunchingNotification`에서 설정 리로드+바인딩 재시도. `SAUIAssistantUtteranceView`는 클래스 부재 프로세스 크래시를 피해 `%group` 조건부 유지(의도적 편차) | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`f6780d47…19f5e9`), AudioToolbox 링크 확인(`otool -L`), 팝업·햅틱 런타임 미검증 |
+| `1.0.0-9+debug` | 2026-10-13 | 진단 HUD 추가: `CFUserNotificationDisplayAlert`(SpringBoard 팝업 `SiriGemini v1.0.0-9` / 프로세스명 / AFConnection 발견 여부) + 사운드 1003, 훅 진입 시 햅틱 `AudioServicesPlaySystemSound(1519)`. AFConnection을 `%group` 없이 최상위 `%hook`로 전환하고 `%init(_ungrouped)` 호출을 자체 nil 검사(`SiriGeminiInstallAFHook`) 뒤로 배치, `UIApplicationDidFinishLaunchingNotification`에서 설정 리로드+바인딩 재시도. `SAUIAssistantUtteranceView`는 클래스 부재 프로세스 크래시를 피해 `%group` 조건부 유지(의도적 편차) | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`f6780d47…19f5e9`), AudioToolbox 링크 확인(`otool -L`), **기기 설치 시 무한 리스프링 유발 → `-10`에서 제거됨** |
+
+| `1.0.0-10+debug` | 2026-10-13 | 핫픽스: `CFUserNotificationDisplayAlert`·`SiriGeminiShowAlert`·사운드 1003 완전 삭제(`#import <CoreFoundation/CFUserNotification.h>` 제거), `SiriGeminiReportLoad()`를 로그 전용으로 축소, `kSiriGeminiBuildTag` → `1.0.0-10`. 햅틱(1519)과 dlopen/Darwin 옵저버/지연 바인딩 재시도는 유지(지침 샘플 대비 의도적 편차, §deviation in docs) | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`192655ec…591fb5`), `nm -u`로 CFUserNotification 심볼 0건 확인, 리스프링 정상화 여부는 기기 재테스트 대기 |
 
 ## 5. 검증 상태 (Fact-Check Gate)
 
@@ -82,11 +84,13 @@ sirigemini\
 | logos는 ungrouped `%init(_ungrouped)`를 호출 지점에 인라인 발행하며 nil 가드가 없고, 별도 자동 설치 생성자도 없다 | Logos/Theos 코드 생성 semantics | VM 실측: `/tmp/Tweak_pre.m` line 592(`{Class … = objc_getClass("AFConnection"); { MSHookMessageEx(…); }}`), `grep -c _logos_init` = 0, MSHookMessageEx 발생 지점 2곳뿐 | VERIFIED (code-level) |
 | "`%group`+조건부 `%init`(-8)이 훅 미설치의 원인" → 직접 훅 전환으로 해결된다 | root cause 주장 | 생성 코드 실측: -8과 -9 모두 "클래스 존재 시에만 바인딩" 동일 경로. 전환 자체의 동작 차이 없음 | DISPROVEN (as stated) / root cause OPEN ISSUE |
 | `CFUserNotificationDisplayAlert`·`AudioServicesPlaySystemSound` 심볼이 로드 시점에 해결 가능 | link/loader behavior | `otool -L .theos/obj/debug/arm64/SiriGemini.dylib`에 `AudioToolbox.framework` 링크 확인, CoreFoundation은 이미 링크 | VERIFIED (static) / 팝업 실제 표시는 OPEN |
-| 리스프링 후 SpringBoard에서 `SiriGemini v1.0.0-9` 팝업 표시, 발화 시 햅틱(1519) 발생 | runtime behavior | 기기 미테스트 | OPEN ISSUE |
+| 리스프링 후 SpringBoard에서 `SiriGemini v1.0.0-9` 팝업 표시, 발화 시 햅틱(1519) 발생 | runtime behavior | 기기 테스트 결과 **팝업 경로가 무한 리스프링을 유발**(-10에서 제거). 햅틱은 미검증 | DISPROVEN (popup as diagnostic — causes respring loop) / OPEN (햅틱) |
+| `CFUserNotificationDisplayAlert(timeout=0,…)`는 사용자가 닫을 때까지 호출 스레드를 기다린다(차단형) | API semantics | Apple Docs `cfusernotificationdisplayalert`: "wait for the user to dismiss… Pass `0` to have the dialog never time out" | VERIFIED (docs) |
+| `%ctor`(SpringBoard 부팅 중·메인 스레드)에서 위 차단 API 호출 → 부팅 정지 → 워치독 킬 → 무한 리스프링 | causal mechanism | docs(차단 semantics) + `-9` 코드 실측(`%ctor → ReportLoad → ShowAlert`) + 기기 증언(무한 리스프링). kill 신호/10초 수치는 로그 미확보 | VERIFIED (blocking chain) / HYPOTHESIS (watchdog 수치) |
 
 ## 6. 다음 단계 (OPEN ISSUES)
 
-0. **HUD로 원인 분리(-9 최우선):** 리스프링 후 팝업/진단 확인 → (a) 팝업 없음 = dylib 주입 자체 차단(필터/plutil·RootHide 허용 확인), (b) 팝업+`AFConnection: 발견됨` = 바인딩 시도됨 → 발화 시 햅틱/`HOOK FIRED` 로그로 셀렉터 유효성 판정, (c) 팝업+`미발견` = AssistantServices 지연/미로드. 상세 판정표: `docs/diagnostic-alert-and-direct-hook.md` §6
+0. **`-10` 재테스트로 원인 분리(팝업 폐지 → 로그 기준):** (a) 리스프링 정상화 = 차단형 UI가 크래시 원인이었음을 기기 확정, (b) Console/syslog에 `[SiriGemini] v1.0.0-10 ctor loaded in process: SpringBoard (AFConnection: 0/1)` 확인 = 주입·클래스 상태 확정, (c) 발화 시 진동(1519)+`HOOK FIRED in process <name>` = 셀렉터 유효성 판정. 상세: `docs/hotfix-remove-blocking-alert.md` §4
 
 1. 기기 로그로 훅 실제 진입 프로세스 확정: `HOOK FIRED in process <name>` (원인 2 검증).
 2. 복원 성공 경로 확인: `text via phrases path` / `via direct selector` / `via description regex fallback` / `via description word fallback`. 정규식·단어 폴백 결과이면 잡음 여부를 반드시 확인할 것. 실패 시 `ALL text extraction paths failed, class: <X>` → `<X>` 구조를 class-dump/Frida로 조사해 정확한 경로 추가.

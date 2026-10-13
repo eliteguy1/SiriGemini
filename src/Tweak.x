@@ -2,7 +2,6 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <AudioToolbox/AudioToolbox.h>
-#import <CoreFoundation/CFUserNotification.h>
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -151,42 +150,18 @@ static void SiriGeminiSpeak(NSString *text) {
 }
 
 // ============================================================================
-// 화면 진단 HUD (-9): 트윅 주입/훅 설치 여부를 눈으로 즉시 확인하게 한다.
+// 로드 상태 보고 (-10 핫픽스): 차단형 UI 제거.
+// CFUserNotificationDisplayAlert는 사용자에게 표시될 때까지 호출 스레드를 막는 API다.
+// %ctor(SpringBoard 부팅 중, 메인 스레드)에서 호출하면 워치독이 프로세스를 잡아
+// 무한 리스프링을 일으키므로(-9 기기 증언) 팝업 경로를 완전히 삭제하고 로그만 남긴다.
 // kSiriGeminiBuildTag는 수동 문자열이므로 자동 증가하는 Theos build number와 맞도록 갱신해야 한다.
-static NSString * const kSiriGeminiBuildTag = @"1.0.0-9";
+static NSString * const kSiriGeminiBuildTag = @"1.0.0-10";
 
-static void SiriGeminiShowAlert(NSString *title, NSString *message) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @try {
-            AudioServicesPlaySystemSound(1003);   // 팝업과 함께 햅틱/사운드 피드백
-            CFUserNotificationDisplayAlert(
-                0,
-                kCFUserNotificationPlainAlertLevel,
-                NULL, NULL, NULL,
-                (__bridge CFStringRef)title,
-                (__bridge CFStringRef)message,
-                CFSTR("확인"),
-                NULL,
-                NULL,
-                NULL);
-        } @catch (NSException *e) {
-            NSLog(@"[SiriGemini] alert failed: %@", e);
-        }
-    });
-}
-
-// 로드 상태를 보고한다. SpringBoard에서는 화면 팝업, 모든 프로세스에서 로그를 남긴다(지시 A/B).
 static void SiriGeminiReportLoad(void) {
     NSString *procName = [NSProcessInfo processInfo].processName;
     Class afClass = objc_getClass("AFConnection");
-    NSLog(@"[SiriGemini] ctor loaded in process: %@ (AFConnection: %d)", procName, afClass ? 1 : 0);
-
-    if ([procName isEqualToString:@"SpringBoard"]) {
-        NSString *title = [NSString stringWithFormat:@"SiriGemini v%@", kSiriGeminiBuildTag];
-        NSString *msg = [NSString stringWithFormat:@"SpringBoard 주입 성공!\n프로세스: %@\nAFConnection: %@",
-                         procName, afClass ? @"발견됨 (후킹 설치 중)" : @"미발견 (지연 바인딩 대기)"];
-        SiriGeminiShowAlert(title, msg);
-    }
+    NSLog(@"[SiriGemini] v%@ ctor loaded in process: %@ (AFConnection: %d)",
+          kSiriGeminiBuildTag, procName, afClass ? 1 : 0);
 }
 
 static void SiriGeminiPostClaim(void) {
@@ -587,7 +562,7 @@ static void SiriGeminiInstallAFHook(void) {
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         SiriGeminiReloadSettings();
 
-        // -9: %group 조건부 init 대신 표준 직접 훅 바인딩을 시도하고, 결과를 화면 팝업으로 보고한다.
+        // 직접 훅 바인딩 시도(차단 없음) 후 결과를 로그로만 보고한다(-10 핫픽스: 팝업 제거).
         SiriGeminiInstallAFHook();
         SiriGeminiReportLoad();
 

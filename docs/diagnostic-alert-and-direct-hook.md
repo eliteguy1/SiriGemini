@@ -2,6 +2,8 @@
 
 지침: `temp/prompt_diagnostic_alert_and_direct_hook.txt`
 
+> **주의 (2026-10-13 갱신):** 본 릴리스의 진단 팝업(`CFUserNotificationDisplayAlert`)은 SpringBoard `%ctor`에서 차단형 호출이라 무한 리스프링을 유발했다. `-10`에서 제거되었으며(직접 훅 전환·햅틱은 유지) 경위와 근거는 `docs/hotfix-remove-blocking-alert.md`. 아래 §6의 "팝업으로 판정" 흐름은 폐기됨.
+
 ## 1. 지시된 진단의 검증 상태
 
 | 주장 | 확인 결과 | 상태 |

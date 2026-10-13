@@ -1,0 +1,40 @@
+# 초긴급 핫픽스 지시: SpringBoard %ctor 내 CFUserNotificationDisplayAlert 데드락 제거
+
+## 1. 긴급 크래시 원인 분석
+SpringBoard 기동 시점(`%ctor`)에서 `CFUserNotificationDisplayAlert`를 호출함.
+- `CFUserNotificationDisplayAlert`는 SpringBoard의 알림 서버와 IPC 통신을 하는 함수임.
+- SpringBoard 자기 자신이 부팅 중인 `%ctor`에서 자기 자신에게 알림 IPC를 요청하여 **Deadlock(데드락) 발생**.
+- iOS Watchdog(10초)에 의해 SpringBoard가 SIGKILL/SIGABRT되어 **무한 리스프링 발생**!
+- 반면, 이로써 **`SiriGemini.dylib`가 SpringBoard에 정상 주입되고 있음은 100% 입증됨**.
+
+---
+
+## 2. 구체적 수정 지시 (`src/Tweak.x`)
+
+1. **`SiriGeminiShowAlert` 및 `CFUserNotificationDisplayAlert` 완전 제거**:
+   - `%ctor` 및 전역에서 `CFUserNotificationDisplayAlert`를 완전히 삭제.
+2. **`%ctor`를 100% 안전하고 가벼운 표준 구조로 복원**:
+```objc
+%ctor {
+    @autoreleasepool {
+        NSLog(@"[SiriGemini] %ctor initializing in %@", [NSProcessInfo processInfo].processName);
+
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        NULL,
+                                        SiriGeminiSettingsChangedCallback,
+                                        SiriGeminiChangedNotification,
+                                        NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+        SiriGeminiReloadSettings();
+
+        %init(_ungrouped);
+        NSLog(@"[SiriGemini] %ctor completed safely");
+    }
+}
+```
+3. **`_tellSpeechDelegateSpeechRecognized:` 내부 진동만 유지**:
+   - 햅틱 진동(`AudioServicesPlaySystemSound(1519)`)은 음성이 인식되었을 때 백그라운드에서 안전하게 호출되므로 유지 가능.
+4. **macOS VM 동기화, RootHide 재빌드 (`1.0.0-10+debug`), deb 회수**:
+   - `Tweak.x` VM으로 scp 전송.
+   - `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+   - 산출물 deb 회수 및 보고.
