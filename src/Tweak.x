@@ -47,54 +47,68 @@ static void SiriGeminiReloadSettings(void) {
         NSDictionary *prefs = [NSDictionary dictionaryWithContentsOfFile:SiriGeminiPrefsPath];
         keywordVal = prefs[@"keyword"];
     }
-    if ([keywordVal isKindOfClass:[NSString class]] && [(NSString *)keywordVal length] > 0) {
-        gKeyword = [keywordVal copy];
+    if ([keywordVal isKindOfClass:[NSString class]]) {
+        NSString *kw = [(NSString *)keywordVal stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        gKeyword = (kw.length > 0) ? [kw copy] : nil;   // 앞뒤 공백 제거 후 로드
     } else {
         gKeyword = nil;
     }
 }
 
-// 키워드 매칭 (유연화): 비어 있으면 전체 가로챔. 설정 시 대소문자 무시 부분일치,
-// 공백 무시 비교까지 지원 ("젬아 날씨", "젬아날씨" 모두 매칭).
-static BOOL SiriGeminiKeywordMatches(NSString *recognizedText) {
-    if (gKeyword.length == 0) return YES;
-    if ([recognizedText rangeOfString:gKeyword options:NSCaseInsensitiveSearch].location != NSNotFound) {
-        return YES;
+// 발화 전처리: 앞뒤 공백/줄바꿈 제거 + 시리 호출어 접두사 제거.
+// " 젬아", "시리야 젬아", "Hey Siri 젬아" 등을 동일한 형태로 만든다.
+static NSString *SiriGeminiCleanText(NSString *raw) {
+    if (!raw) return @"";
+    NSString *cleaned = [raw stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSArray<NSString *> *prefixes = @[@"시리야", @"시리", @"hey siri", @"siri야", @"siri"];
+    for (NSString *p in prefixes) {
+        if ([cleaned.lowercaseString hasPrefix:p.lowercaseString]) {
+            cleaned = [cleaned substringFromIndex:p.length];
+            cleaned = [cleaned stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        }
     }
-    NSString *flatText = [[recognizedText componentsSeparatedByCharactersInSet:
-                           [NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsJoinedByString:@""];
-    NSString *flatKey = [[gKeyword componentsSeparatedByCharactersInSet:
-                          [NSCharacterSet whitespaceAndNewlineCharacterSet]] componentsJoinedByString:@""];
-    if (flatKey.length > 0 &&
-        [flatText rangeOfString:flatKey options:NSCaseInsensitiveSearch].location != NSNotFound) {
-        return YES;
-    }
-    return NO;
+    return cleaned;
 }
 
+// 키워드 매칭 ( 전면 유연화 ): 비어 있으면 전체 가로챔.
+// 위치(location==0) 조건 없음 — anywhere contains, 대소문자/호출어 접두사 무시.
 static BOOL SiriGeminiShouldIntercept(NSString *recognizedText) {
     if (!gEnabled) return NO;
     if (gInGeminiCallback) return NO;  // Gemini 응답 재생성 루프 방지
     if (recognizedText.length == 0) return NO;
-    if (!SiriGeminiKeywordMatches(recognizedText)) return NO;
-    NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-    if (now - gLastDispatchTime < kMinDispatchInterval) return NO;  // 스로틀
-    return YES;
+
+    NSString *cleaned = SiriGeminiCleanText(recognizedText);
+    if (gKeyword.length == 0) return YES;   // 키워드 미설정 → 전체 가로챔
+
+    NSString *kw = [gKeyword stringByTrimmingCharactersInSet:
+                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([cleaned.lowercaseString containsString:kw.lowercaseString] ||
+        [recognizedText.lowercaseString containsString:kw.lowercaseString]) {
+        // 파생 가드 (기존 스로틀 보존): 동일 발화 중복 dispatch 및 고빈도 호출 방지.
+        NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+        if (now - gLastDispatchTime < kMinDispatchInterval) return NO;
+        return YES;
+    }
+
+    return NO;
 }
 
 static NSString * SiriGeminiStripKeyword(NSString *text) {
+    NSString *cleaned = SiriGeminiCleanText(text);
     if (gKeyword.length > 0) {
-        // 첫 매칭 위치의 키워드를 제거 (접두사 아니어도 됨).
-        NSRange r = [text rangeOfString:gKeyword options:NSCaseInsensitiveSearch];
+        NSString *kw = [gKeyword stringByTrimmingCharactersInSet:
+                        [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSRange r = [cleaned rangeOfString:kw options:NSCaseInsensitiveSearch];
         if (r.location != NSNotFound) {
-            NSMutableString *m = [text mutableCopy];
-            [m deleteCharactersInRange:r];
-            return [m stringByTrimmingCharactersInSet:
-                    [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+            cleaned = [cleaned stringByReplacingCharactersInRange:r withString:@""];
+            cleaned = [cleaned stringByTrimmingCharactersInSet:
+                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
         }
     }
-    return [text stringByTrimmingCharactersInSet:
-            [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    return cleaned.length > 0 ? cleaned : SiriGeminiCleanText(text);
 }
 
 // Siri 발화 출력 (best-effort).
@@ -188,8 +202,10 @@ static NSString *SiriGeminiExtractRecognizedText(id speechRecognized) {
 
 // HYPOTHESIS: Siri 음성 인식 콜백. 실제 시그니처는 기기 class-dump/Frida로 확정 필요.
 - (void)_tellSpeechDelegateSpeechRecognized:(id)recognition {
+    NSLog(@"[SiriGemini] Raw speech object: %@", [recognition class]);
     NSString *recognizedText = SiriGeminiExtractRecognizedText(recognition);
-    NSLog(@"[SiriGemini] Recognized voice text: %@", recognizedText);
+    NSLog(@"[SiriGemini] Extracted text: '%@' (enabled: %d, keyword: '%@')",
+          recognizedText, gEnabled, gKeyword);
 
     if (recognizedText && SiriGeminiShouldIntercept(recognizedText)) {
         gLastDispatchTime = [[NSDate date] timeIntervalSince1970];
@@ -276,21 +292,23 @@ static void SiriGeminiSettingsChangedCallback(CFNotificationCenterRef center,
                                         CFNotificationSuspensionBehaviorDeliverImmediately);
         SiriGeminiReloadSettings();
 
-        // 조건부 %init: 클래스가 실제 존재할 때만 훅 활성화 (가설 무효화 시 자동 비활성).
+        // AFConnection 클래스가 존재하면 무조건 훅 활성화.
+        // (이전 구현의 instancesRespondToSelector: 검사는 비공개 셀렉터/동적 로딩 환경에서
+        //  NO를 반환해 %init 자체가 건너뛰어져 훅이 통째로 꺼지는 원인이 되었다.)
         Class afConn = objc_getClass("AFConnection");
-        if (afConn && [afConn instancesRespondToSelector:@selector(_tellSpeechDelegateSpeechRecognized:)]) {
+        if (afConn) {
             %init(SiriGeminiAFConnection);
-            NSLog(@"[SiriGemini] AFConnection hook enabled");
+            NSLog(@"[SiriGemini] AFConnection hook FORCE-INITIALIZED");
         } else {
-            NSLog(@"[SiriGemini] AFConnection hook SKIPPED (class/selector absent — hypothesis unconfirmed)");
+            NSLog(@"[SiriGemini] AFConnection class NOT FOUND");
         }
 
-        Class utteranceView = objc_getClass("SAUIAssistantUtteranceView");
-        if (utteranceView) {
+        Class uttClass = objc_getClass("SAUIAssistantUtteranceView");
+        if (uttClass) {
             %init(SiriGeminiUtteranceView);
-            NSLog(@"[SiriGemini] SAUIAssistantUtteranceView hook enabled");
+            NSLog(@"[SiriGemini] SAUIAssistantUtteranceView hook INITIALIZED");
         } else {
-            NSLog(@"[SiriGemini] SAUIAssistantUtteranceView hook SKIPPED (class absent — hypothesis unconfirmed)");
+            NSLog(@"[SiriGemini] SAUIAssistantUtteranceView class NOT FOUND");
         }
     }
 }

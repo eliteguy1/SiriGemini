@@ -11,9 +11,9 @@
 * **GitHub:** `eliteguy1/SiriGemini` (미확인 — 원격 생성 여부 OPEN)
 * **타겟 환경:** iOS 18.7.1 / RootHide (Dopamine 3) / `iphoneos-arm64e`
 * **지원 아키텍처:** `arm64`, `arm64e`
-* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-1+debug` (Theos debug suffix)
-* **프로젝트 상태:** 2단계 RootHide 빌드 성공 (2026-10-13), runtime 미검증
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-5+debug_iphoneos-arm64e.deb` (음성 파서판, SHA256 `11448229…150b8`)
+* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-6+debug` (Theos debug build number)
+* **프로젝트 상태:** 2단계 RootHide 빌드 성공, 4단계 키워드 가로채기 유연화 + 훅 강제 초기화 반영 (2026-10-13), runtime 미검증
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-6+debug_iphoneos-arm64e.deb` (SHA256 `9a9a890f…80693`, 로컬/원격 일치)
 
 ## 2. 핵심 컨셉
 
@@ -52,6 +52,8 @@ sirigemini\
 | `1.0.0-3+debug` | 2026-10-13 | WebView UI 개선 (Safe Area 오토레이아웃, systemBackground, 모달 PageSheet, Safari UA, 인디케이터, 저장 성공 시 자동 닫기, Gemini 툴바 제거) + 재빌드 성공 | 빌드 성공, SHA256 로컬/원격 일치 |
 | `1.0.0-4+debug` | 2026-10-13 | 로그인 상태 UI (동적 버튼 라벨 ✓/필요, 상태 푸터, 로그아웃, viewWillAppear reload) + 재빌드 성공 (에러 2건 해결: PSSpecifier.h import, action ivar→propertyForKey) | 빌드 성공, SHA256 로컬/원격 일치 |
 | `1.0.0-5+debug` | 2026-10-13 | 음성 인식 파서 (SASSpeechRecognized recognition→phrases→tokens→text, dlopen 2종, 키워드 유연 매칭, 인식 로그) + 재빌드 성공 (에러 0) | 빌드 성공, SHA256 로컬/원격 일치 |
+
+| `1.0.0-6+debug` | 2026-10-13 | 키워드 매칭 전면 유연화(CleanText 호출어 접두사 제거 + anywhere contains, 위치 검사 폐지), %ctor의 instancesRespondToSelector 가드 제거로 AFConnection 훅 강제 초기화, 인식/가로채기 로그 강화. control Version 1.0.0 유지, Theos build number 자동 -6 | 빌드 성공(에러 0), SHA256 로컬/원격 일치, runtime 미검증 |
 
 ## 5. 검증 상태 (Fact-Check Gate)
 

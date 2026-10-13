@@ -1,0 +1,128 @@
+# 긴급 버그 수정 지시: 키워드 음성 인식 가로채기 실패 문제 해결
+
+## 1. 정밀 원인 분석
+사용자 피드백: "키워드 동작이 안되는데?"
+
+### 원인 1: 지나치게 엄격한 키워드 위치 검사 (`location != 0`)
+`src/Tweak.x`:
+```objc
+if ([recognizedText rangeOfString:gKeyword options:NSCaseInsensitiveSearch].location != 0) {
+    return NO;
+}
+```
+- 사용자가 음성으로 말할 때 음성 인식 결과의 앞머리에 공백(`" 젬아"`)이 붙거나,
+- 시리를 호출하면서 말하여 앞머리에 `"시리야 젬아"`, `"Siri 젬아"` 등의 호출어가 포함되면 `location != 0`이 되어 즉시 무시(`return NO`)됨.
+- 또한 키워드를 공백 없이 입력했을 때(`gKeyword` 앞뒤 공백 등) 불일치 발생.
+
+### 원인 2: `%ctor`의 과도한 셀렉터 검사로 인한 후킹 누락
+`src/Tweak.x`:
+```objc
+if (afConn && [afConn instancesRespondToSelector:@selector(_tellSpeechDelegateSpeechRecognized:)]) {
+    %init(SiriGeminiAFConnection);
+}
+```
+- 비공개 메소드나 프레임워크 동적 로딩 환경에서 `instancesRespondToSelector:`가 NO를 반환하면 `%init`이 건너뛰어져 훅 자체가 비활성화됨.
+- 클래스 `AFConnection`이 존재하면 무조건 `%init(SiriGeminiAFConnection)`을 수행해야 함.
+
+### 원인 3: `gEnabled` 및 `gKeyword` 로드 안전성
+- RootHide 환경에서 `CFPreferencesCopyAppValue` 및 plist 직접 읽기 모두에서 공백 제거(`stringByTrimmingCharactersInSet:`)를 적용하여 안전하게 로드해야 함.
+
+---
+
+## 2. 구체적 수정 지시 (`src/Tweak.x`)
+
+### A. `%ctor` 수정:
+```objc
+%ctor {
+    @autoreleasepool {
+        dlopen("/System/Library/PrivateFrameworks/AssistantServices.framework/AssistantServices", RTLD_NOW);
+        dlopen("/System/Library/PrivateFrameworks/SAObjects.framework/SAObjects", RTLD_NOW);
+
+        CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                        NULL,
+                                        SiriGeminiSettingsChangedCallback,
+                                        SiriGeminiChangedNotification,
+                                        NULL,
+                                        CFNotificationSuspensionBehaviorDeliverImmediately);
+        SiriGeminiReloadSettings();
+
+        // AFConnection 클래스가 존재하면 무조건 훅 활성화
+        Class afConn = objc_getClass("AFConnection");
+        if (afConn) {
+            %init(SiriGeminiAFConnection);
+            NSLog(@"[SiriGemini] AFConnection hook FORCE-INITIALIZED");
+        } else {
+            NSLog(@"[SiriGemini] AFConnection class NOT FOUND");
+        }
+
+        Class uttClass = objc_getClass("SAUIAssistantUtteranceView");
+        if (uttClass) {
+            %init(SiriGeminiUtteranceView);
+            NSLog(@"[SiriGemini] SAUIAssistantUtteranceView hook INITIALIZED");
+        }
+    }
+}
+```
+
+### B. `SiriGeminiShouldIntercept` 키워드 매칭 전면 유연화:
+```objc
+static NSString *SiriGeminiCleanText(NSString *raw) {
+    if (!raw) return @"";
+    NSString *cleaned = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    // 앞머리 시리야/Siri야 접두사 자동 제거
+    NSArray *prefixes = @[@"시리야", @"시리", @"hey siri", @"siri야", @"siri"];
+    for (NSString *p in prefixes) {
+        if ([cleaned.lowercaseString hasPrefix:p.lowercaseString]) {
+            cleaned = [cleaned substringFromIndex:p.length];
+            cleaned = [cleaned stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        }
+    }
+    return cleaned;
+}
+
+static BOOL SiriGeminiShouldIntercept(NSString *recognizedText) {
+    if (!gEnabled) return NO;
+    if (gInGeminiCallback) return NO;
+    if (recognizedText.length == 0) return NO;
+
+    NSString *cleaned = SiriGeminiCleanText(recognizedText);
+
+    // 키워드가 설정되지 않았으면(비어있으면) 모든 질문 가로챔
+    if (gKeyword.length == 0) return YES;
+
+    // 키워드가 포함되어 있는지 유연하게 검사 (containsString 또는 대소문자/공백 무시)
+    NSString *kw = [gKeyword stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([cleaned.lowercaseString containsString:kw.lowercaseString] ||
+        [recognizedText.lowercaseString containsString:kw.lowercaseString]) {
+        return YES;
+    }
+
+    return NO;
+}
+
+static NSString * SiriGeminiStripKeyword(NSString *text) {
+    NSString *cleaned = SiriGeminiCleanText(text);
+    if (gKeyword.length > 0) {
+        NSString *kw = [gKeyword stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        NSRange r = [cleaned rangeOfString:kw options:NSCaseInsensitiveSearch];
+        if (r.location != NSNotFound) {
+            cleaned = [cleaned stringByReplacingCharactersInRange:r withString:@""];
+            cleaned = [cleaned stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        }
+    }
+    return cleaned.length > 0 ? cleaned : text;
+}
+```
+
+### C. 음성 추출 및 가로채기 로그 강화:
+`_tellSpeechDelegateSpeechRecognized:` 내부:
+```objc
+NSLog(@"[SiriGemini] Raw speech object: %@", [recognition class]);
+NSString *recognizedText = SiriGeminiExtractRecognizedText(recognition);
+NSLog(@"[SiriGemini] Extracted text: '%@' (enabled: %d, keyword: '%@')", recognizedText, gEnabled, gKeyword);
+```
+
+### D. macOS VM 동기화, RootHide 재빌드 (`1.0.0-6+debug`), deb 회수:
+- `Tweak.x` VM으로 scp 전송.
+- `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+- 산출물 회수 및 보고.
