@@ -1,0 +1,54 @@
+# 핵심 Gemini Web RPC(StreamGenerate / SNlM0e) 구현 및 무응답 해결 지시
+
+## 1. 무응답의 근본 원인
+사용자가 "재미야"로 호출 시 무응답이었던 이유:
+1. **음성 가로채기는 100% 성공함** (`_tellSpeechDelegateSpeechRecognized:`가 "재미야"를 감지하여 `%orig`를 건너뜀).
+2. 그러나 `GeminiWebClient.m`이 `https://gemini.google.com`에 임시 placeholder (`POST q=...`)로 요청을 보내어 Google 서버로부터 **HTTP 405/404 에러**가 반환됨.
+3. `Tweak.x`에서 `answer.length == 0`일 때 사용자에게 아무런 음성/화면 피드백도 주지 않고 종료되어 **완전 무응답** 상태가 됨.
+
+---
+
+## 2. 구체적 구현 및 수정 사항
+
+### A. `src/Tweak.x` - 무응답 방지 음성 피드백:
+```objc
+[[GeminiWebClient sharedClient] sendQuestion:question
+                                  completion:^(NSString * _Nullable answer, NSError * _Nullable error) {
+    gInGeminiCallback = NO;
+    if (answer.length > 0) {
+        NSLog(@"[SiriGemini] answer: %@", answer);
+        SiriGeminiSpeak(answer);
+    } else {
+        NSString *errText = [NSString stringWithFormat:@"제미나이 연결 오류: %@", error.localizedDescription ?: @"응답 없음"];
+        NSLog(@"[SiriGemini] error speech: %@", errText);
+        SiriGeminiSpeak(errText);
+    }
+}];
+```
+
+### B. `src/GeminiWebClient.m` - 실제 Gemini Web RPC 파이프라인 구현:
+1. **`SNlM0e` 토큰 추출 (`fetchSNlM0eWithCookie:completion:`)**:
+   - `GET https://gemini.google.com/app`
+   - Header: `Cookie: <cookieHeader>`, `User-Agent: <Safari-UA>`
+   - HTML 본문에서 정규식 `\"SNlM0e\":\"([^\"]+)\"` 검색하여 토큰 추출 (인메모리 캐싱: `static NSString *gCachedSNlM0e`).
+2. **`StreamGenerate` RPC 호출**:
+   - URL: `https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=boq_assistant-bard-web-server_20240519.16_p0&_reqid=250000&rt=c`
+   - Method: `POST`
+   - Headers:
+     - `Content-Type: application/x-www-form-urlencoded;charset=UTF-8`
+     - `Cookie: <cookieHeader>`
+     - `Origin: https://gemini.google.com`
+     - `Referer: https://gemini.google.com/`
+     - `User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 18_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1`
+   - Body:
+     - JSON 직렬화: `[null, [NSString stringWithFormat:@"[[\"%@\"],null,[\"\",\"\",\"\"]]", escapedQuestion]]`
+     - URL 인코딩: `f.req=<encodedJSON>&at=<snlm0e>`
+3. **응답 텍스트 추출 (`extractAnswerFromResponseData:`)**:
+   - 응답 텍스트에서 안전 접두사(`)]}'\n`) 처리
+   - JSON 파싱 또는 정규식을 통해 Gemini 모델이 생성한 최종 텍스트 추출 (답변 문자열 반환).
+   - 파싱 실패 시 원문 중 사람이 읽을 수 있는 텍스트 블록 추출 반환.
+
+### C. macOS VM 동기화, RootHide 재빌드 (`1.0.0-7+debug`), deb 회수:
+- `GeminiWebClient.m` 및 `Tweak.x` VM으로 scp 전송.
+- `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+- 산출물 회수 및 보고.

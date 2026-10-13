@@ -216,10 +216,13 @@ static NSString *SiriGeminiExtractRecognizedText(id speechRecognized) {
                                           completion:^(NSString * _Nullable answer, NSError * _Nullable error) {
             gInGeminiCallback = NO;
             if (answer.length > 0) {
-                NSLog(@"[SiriGemini] answer (%lu chars)", (unsigned long)[answer length]);
+                NSLog(@"[SiriGemini] answer: %@", answer);
                 SiriGeminiSpeak(answer);
             } else {
-                NSLog(@"[SiriGemini] error: %@", error);
+                NSString *errText = [NSString stringWithFormat:@"제미나이 연결 오류: %@",
+                                     error.localizedDescription ?: @"응답 없음"];
+                NSLog(@"[SiriGemini] error speech: %@ (raw error: %@)", errText, error);
+                SiriGeminiSpeak(errText);
             }
             // NOTE: 가로챈 경우 %orig를 호출하지 않아 기존 Siri 파이프라인을 중단한다.
             // (키워드 매칭 시에만 해당. 폴백이 필요하면 2단계에서 %orig 호출 정책 확정.)
