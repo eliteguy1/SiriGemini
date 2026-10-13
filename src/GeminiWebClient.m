@@ -101,8 +101,17 @@ static NSArray<NSString *> *SiriGeminiBalancedArrays(NSString *text, NSUInteger 
     return out;
 }
 
+// 한글 포함 여부(-13): 한국어 답변은 길이가 짧을 수 있으므로 길이 게이트를 우회한다.
+// 지시문의 `^[가-힣]`(문자열 시작) 대신 선행 공백/구두점을 허용하도록 비앵커 검사로 완화했다.
+static BOOL SiriGeminiHasHangul(NSString *s) {
+    if (s.length == 0) return NO;
+    return [s rangeOfString:@"[가-힣]" options:NSRegularExpressionSearch].location != NSNotFound;
+}
+
 static BOOL SiriGeminiLooksLikeAnswer(NSString *s) {
-    if (s.length < 20) return NO;
+    // -13: 단문 답변("저는 Gemini입니다")을 버리지 않도록 길이 게이트를 대폭 완화했다.
+    // 토큰/URL/내부 상수 기각 규칙은 그대로 유지한다(짧은 쓰레기 문자열 차단).
+    if (s.length < 2) return NO;
     // 토큰/세션 ID/URL/내부 상수는 답변이 아니다.
     static NSRegularExpression *tokenRe = nil;
     static dispatch_once_t once;
@@ -140,21 +149,45 @@ static void SiriGeminiCollectAnswerCandidates(id obj, NSMutableArray<NSString *>
     }
 }
 
+// 인용 블록 내부의 전처치(-13에서 분리): 줄바꿈/따옴표 이스케이프 복구.
+static NSString *SiriGeminiUnescapeJSONString(NSString *s) {
+    if (s.length == 0) return s;
+    NSString *out = [s stringByReplacingOccurrencesOfString:@"\\n" withString:@"\n"];
+    out = [out stringByReplacingOccurrencesOfString:@"\\\"" withString:@"\""];
+    return out;
+}
+
 // 원문에서 사람이 읽을 수 있는 블록 추출 (최후 폴백): 인용부호로 감싼 긴 문자열.
+// -13: 폴백 경로에도 최소 40자 게이트가 있어 짧은 한국어 답변이 통째로 사라졌다.
+// 따라서 "한글을 포함한 인용 필드"를 우선 스캔하고, 그것이 없으면 기존 40자+ 스캔으로 넘어간다.
 static NSString *SiriGeminiReadableBlockFallback(NSString *raw) {
-    static NSRegularExpression *re = nil;
+    static NSRegularExpression *hangulRe = nil;
+    static NSRegularExpression *longRe = nil;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        re = [NSRegularExpression regularExpressionWithPattern:@"\"((?:[^\"\\\\\\n]|\\\\.){40,}?)\""
-                                                       options:0 error:nil];
+        hangulRe = [NSRegularExpression regularExpressionWithPattern:
+                    @"\"((?:[^\"\\\\\\n]|\\\\.){0,240}[가-힣](?:[^\"\\\\\\n]|\\\\.){0,240})\""
+                    options:0 error:nil];
+        longRe = [NSRegularExpression regularExpressionWithPattern:@"\"((?:[^\"\\\\\\n]|\\\\.){40,}?)\""
+                                                           options:0 error:nil];
     });
-    if (!re) return nil;
+
     __block NSString *best = nil;
-    [re enumerateMatchesInString:raw options:0 range:NSMakeRange(0, raw.length)
-                      usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
-         NSString *s = [raw substringWithRange:[m rangeAtIndex:1]];
-         s = [s stringByReplacingOccurrencesOfString:@"\\n" withString:@"\n"];
-         s = [s stringByReplacingOccurrencesOfString:@"\"" withString:@"\""];
+    if ([raw rangeOfString:@"[가-힣]" options:NSRegularExpressionSearch].location != NSNotFound && hangulRe) {
+        [hangulRe enumerateMatchesInString:raw options:0 range:NSMakeRange(0, raw.length)
+                                usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
+            NSString *s = SiriGeminiUnescapeJSONString([raw substringWithRange:[m rangeAtIndex:1]]);
+            if (SiriGeminiHasHangul(s) && SiriGeminiLooksLikeAnswer(s)) {
+                if (!best || s.length > best.length) best = s;
+            }
+        }];
+    }
+
+    if (best || !longRe) return best;
+
+    [longRe enumerateMatchesInString:raw options:0 range:NSMakeRange(0, raw.length)
+                          usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop) {
+         NSString *s = SiriGeminiUnescapeJSONString([raw substringWithRange:[m rangeAtIndex:1]]);
         if (SiriGeminiLooksLikeAnswer(s) && (!best || s.length > best.length)) best = s;
     }];
     return best;
@@ -304,15 +337,23 @@ static NSString *SiriGeminiReadableBlockFallback(NSString *raw) {
         NSMutableArray<NSString *> *candidates = [NSMutableArray array];
         SiriGeminiCollectAnswerCandidates(parsed, candidates, 0);
         if (candidates.count == 0) continue;
-        // 공백을 포함하는(자연어다운) 최장 문자열 우선.
+        // 우선순위(-13): 한글 포함 → 공백 포함 → 길이. 한국어 짧은 답변이 ASCII 파편에 밀리지 않게 한다.
         NSString *best = nil;
         for (NSString *s in candidates) {
-            BOOL hasSpace = ([s rangeOfString:@" "].location != NSNotFound);
-            if (!best) best = s;
-            else if ((hasSpace && [best rangeOfString:@" "].location == NSNotFound) ||
-                     (hasSpace == ([best rangeOfString:@" "].location != NSNotFound) && s.length > best.length)) {
-                best = s;
+            if (!best) { best = s; continue; }
+            BOOL hangul = SiriGeminiHasHangul(s);
+            BOOL bestHangul = SiriGeminiHasHangul(best);
+            if (hangul != bestHangul) {
+                if (hangul) best = s;
+                continue;
             }
+            BOOL hasSpace = ([s rangeOfString:@" "].location != NSNotFound);
+            BOOL bestSpace = ([best rangeOfString:@" "].location != NSNotFound);
+            if (hasSpace != bestSpace) {
+                if (hasSpace) best = s;
+                continue;
+            }
+            if (s.length > best.length) best = s;
         }
         if (best) return best;
     }

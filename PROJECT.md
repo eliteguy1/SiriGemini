@@ -11,9 +11,9 @@
 * **GitHub:** `eliteguy1/SiriGemini` (remote 설정 확인됨 / push 및 저장소 존재 여부는 실측 미확인)
 * **타겟 환경:** iOS 18.7.1 / RootHide (Dopamine 3) / `iphoneos-arm64e`
 * **지원 아키텍처:** `arm64`, `arm64e`
-* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-12+debug` (Theos debug build number)
-* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성(-7), 텍스트 복원 다층화 + 선점(-8), 직접 훅 전환(-9), 차단형 알림 제거 핫픽스(-10), **SiriPlus식 3대 훅(`_tellSpeechDelegateSpeechRecognized:` / `_invokeRequestTimeoutForReason:` / `_handleCommand:reply:`) 탑재로 Apple 기본 응답 명령 차단 시도(-11, 로그 태그 동기화 -12)** 반영 (2026-10-13). 햅틱(-10)까지 확인되어 음성 훅 진입은 실증됨. 두 신규 셀렉터의 실존/시그니처는 미검증 → 바인딩을 `instancesRespondToSelector:` 가드 뒤에만 수행(근거: `docs/siriplus-three-hooks-response-block.md` §3)
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-12+debug_iphoneos-arm64e.deb` (SHA256 `a361fec7…4accde`, 로컬/VM 일치; dylib strings에 `_handleCommand`=2, `_invokeRequestTimeoutForReason`=2 확인)
+* **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-13+debug` (Theos debug build number)
+* **프로젝트 상태:** 훅 강제 초기화(-6), Gemini Web RPC + 에러 음성(-7), 텍스트 복원 다층화 + 선점(-8), 직접 훅 전환(-9), 차단형 알림 제거 핫픽스(-10), SiriPlus식 3대 훅으로 Apple 기본 응답 명령 차단(-11/-12), **TTS 엔진 정적 보존(`gSharedSynth`)+메인 큐 발화+ko-KR 음성 + 단문 답변 필터 완화 및 한글 우선 선택(-13)** 반영 (2026-10-13). `-12` 기기 실측으로 음성 가로채기·햅틱·Apple 응답 차단 3종 성공 확인. 무음의 원인("synth 즉시 dealloc")은 미검증 가설이며, 세션 조작(`Playback + DuckOthers`, 미-deactivate) 리스크는 관측 필요
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-13+debug_iphoneos-arm64e.deb` (SHA256 `5fb00fd1…ddb55`, 로컬/VM 일치; dylib에 `setCategory:withOptions:error:`·`voiceWithLanguage:`·`stopSpeakingAtBoundary:` 셀렉터 및 `_OBJC_CLASS_$_AVSpeechSynthesizer/Voice` undefined 심볼 존재 확인)
 
 ## 2. 핵심 컨셉
 
@@ -63,7 +63,11 @@ sirigemini\
 
 | `1.0.0-10+debug` | 2026-10-13 | 핫픽스: `CFUserNotificationDisplayAlert`·`SiriGeminiShowAlert`·사운드 1003 완전 삭제(`#import <CoreFoundation/CFUserNotification.h>` 제거), `SiriGeminiReportLoad()`를 로그 전용으로 축소, `kSiriGeminiBuildTag` → `1.0.0-10`. 햅틱(1519)과 dlopen/Darwin 옵저버/지연 바인딩 재시도는 유지(지침 샘플 대비 의도적 편차, §deviation in docs) | 빌드 성공(오류 0), SHA256 로컬/VM 일치(`192655ec…591fb5`), `nm -u`로 CFUserNotification 심볼 0건 확인. 후속 기기 보고에서 햅틱 1519 발생 = 부팅 정상화 + 음성 훅 진입 실증(사용자 보고) |
 
-| `1.0.0-11+debug` / `1.0.0-12+debug` | 2026-10-13 | SiriPlus식 3대 훅: 인터셉트 상태(`gIsInterceptingSiri`, `gCapturedQuestion`) + 성공 2차 햅틱 1520 + 답변 후 3초 창 유지, `_invokeRequestTimeoutForReason:` 타임아웃 차단, `_handleCommand:reply:`에서 클래스명 `SAUI`/`AddViews`/`AssistantUtterance` 매칭 시 `%orig` 미호출(Apple 출력 명령 차단), `reply`는 `NSBlock` 확인 후에만 `replyBlock(nil)`. 신규 셀렉터 둘은 **별도 %group으로 분리 후 `instancesRespondToSelector:` 가드 통과 시에만 %init**(미구현 바인딩의 %orig=NULL 크래시 방지). Logos 구문 오류(`%group` 내 `%hook` 누락 → `%orig does not make sense outside a function`) 수정 | 빌드 성공(오류 0), `-12` 회수 SHA256 로컬/VM 일치(`a361fec7…4accde`), `strings`로 셀렉터·로그 문자열 존재 확인, 두 셀렉터 런타임 실존은 미검증 |
+| `1.0.0-11+debug` | 2026-10-13 | SiriPlus식 3대 훅: 인터셉트 상태(`gIsInterceptingSiri`, `gCapturedQuestion`) + 성공 2차 햅틱 1520 + 답변 후 3초 창 유지, `_invokeRequestTimeoutForReason:` 타임아웃 차단, `_handleCommand:reply:`에서 클래스명 `SAUI`/`AddViews`/`AssistantUtterance` 매칭 시 `%orig` 미호출(Apple 출력 명령 차단), `reply`는 `NSBlock` 확인 후에만 `replyBlock(nil)`. 신규 셀렉터 둘은 **별도 %group으로 분리 후 `instancesRespondToSelector:` 가드 통과 시에만 %init**(미구현 바인딩의 %orig=NULL 크래시 방지). Logos 구문 오류(`%group` 내 `%hook` 누락 → `%orig does not make sense outside a function`) 수정 | 빌드 성공(오류 0), `strings`로 셀렉터·로그 문자열 존재 확인. 런타임 실존 여부는 이 시점엔 미검증 → `-12` 기기 테스트에서 동작 확인됨 |
+
+| `1.0.0-12` | 2026-10-13 | 로그 태그(`kSiriGeminiBuildTag`)를 실제 빌드 번호로 동기화(코드 차이 없음) → 이 빌드로 기기 배포·테스트: 음성 가로채기/햅틱/Apple 응답 차단 성공 확인 | SHA256 `a361fec7…4accde`, dylib strings에 신규 셀렉터 존재(각 2 = 훅+가드), `response hook guard` 로그 추가. **성공 판정 근거는 사용자 보고** |
+
+| `1.0.0-13+debug` | 2026-10-13 | (A) `SiriGeminiSpeak` 개편: `static AVSpeechSynthesizer *gSharedSynth`(정적 보존·재사용), 발화를 메인 큐로 이동, `AVAudioSession` `Playback + DuckOthers` + `setActive:YES`, `ko-KR` 음성, 발화 전 `stopSpeakingAtBoundary:Immediate`, 리플렉션(`objc_getClass`) 제거. (B) 답변 필터: 최소 길이 20→2(토큰/URL 기각은 유지), `SiriGeminiHasHangul()` 도입, 후보 선택 우선순위 `한글→공백→길이`, 폴백 정규식의 `{40,}` 때문에 짧은 답변이 추가로 죽는 결함 발견 → 한글 포함 인용 필드 우선 스캔 추가 + `SiriGeminiUnescapeJSONString()` 분리 | 사전 프로브(`logos` 714줄 / Tweak·GeminiWebClient 각각 syntax OK), 패키지 errors=0, dylib에 3개 셀렉터+신클래스 undefined 심볼 확인, SHA256 로컬=VM(`5fb00fd1…ddb55`), 소스 md5 동기화. 무음 원인 가설은 미검증(관측 대기) |
 
 ## 5. 검증 상태 (Fact-Check Gate)
 
@@ -90,17 +94,21 @@ sirigemini\
 | `CFUserNotificationDisplayAlert(timeout=0,…)`는 사용자가 닫을 때까지 호출 스레드를 기다린다(차단형) | API semantics | Apple Docs `cfusernotificationdisplayalert`: "wait for the user to dismiss… Pass `0` to have the dialog never time out" | VERIFIED (docs) |
 | `%ctor`(SpringBoard 부팅 중·메인 스레드)에서 위 차단 API 호출 → 부팅 정지 → 워치독 킬 → 무한 리스프링 | causal mechanism | docs(차단 semantics) + `-9` 코드 실측(`%ctor → ReportLoad → ShowAlert`) + 기기 증언(무한 리스프링). kill 신호/10초 수치는 로그 미확보 | VERIFIED (blocking chain) / HYPOTHESIS (watchdog 수치) |
 | 음성 훅 진입 정상 작동(햅틱 1519 발생), 하지만 Apple 기본 응답이 그대로 출력됨 | runtime behavior | 사용자 기기 보고(`-10` 이후 진동 확인, "시리입니다" 대답 계속) | VERIFIED (observed, single report) |
-| `AFConnection`의 `- _invokeRequestTimeoutForReason:` / `- _handleCommand:reply:` 실존 및 4번째 인자=블록 | private selectors/types | SiriPlus 역공학 인용(외부 출처). 로컬 검증 수단 부재(`extracted\` 파일 0개·`mcp\` 비어있음 실측), 디바이스 클래스 목록 미확보 | UNVERIFIED (externally-sourced HYPOTHESIS) → 기기 `response hook guard:` 로그로 판정 |
+| `AFConnection`의 `- _invokeRequestTimeoutForReason:` / `- _handleCommand:reply:` 실존 및 4번째 인자=블록 | private selectors/types | SiriPlus 역공학 인용(외부 출처)으로 시작. `-12` 기기 테스트에서 Apple 기본 응답("시리입니다")이 사라졌다는 사용자 보고 → 두 훅 중 최소 하나는 유효하게 동작한 셈. 다만 **어느 셀렉터가 막았는지**, reply 타입/블록 여부는 로그 미수집으로 미분리 | VERIFIED (동작 관측, 사용자 보고) / OPEN ISSUE (구체 셀렉터·시그니처 분리) |
+| `-12` 무음의 원인은 `AVSpeechSynthesizer` 지역 변수 즉시 dealloc | causal mechanism | dealloc 사실은 코드 실측(지역 변수). "발화 중 해제가 음성을 중단시킨다"는 Apple Docs/SDK 헤더 어디에서도 근거를 찾지 못함(`speech-synthesis.md`, `AVSpeechSynthesis.h` 340줄 grep) | UNVERIFIED (HYPOTHESIS) → `-13` 관측으로 판정. 상세: `docs/fix-tts-dealloc-and-short-answer.md` §2 |
+| 사용된 AVFoundation/AVFAudio API 이름 및 `Playback + DuckOthers` 조합의 합법성 | API names / semantics | 디바이스 SDK 헤더 실측(`AVSpeechSynthesis.h` 셀렉터 카운트, `AVAudioSessionTypes.h:450` 상수값, 446–448줄 유효 카테고리 목록) | VERIFIED (local headers) |
+| 짧은 답변 폐기 게이트는 필터 함수 하나만이 아니라 폴백 정규식 `{40,}`에도 있었다 | code-level fact | `-12` 소스 실측(`GeminiWebClient.m:105`, 폴백 패턴 157줄) → `-13`에서 두 곳 모두 완화 | VERIFIED (code inspection) — 지시문은 한 곳만 지적 |
 | 미구현 셀렉터를 바인딩하면 `%orig`(orig=NULL) 경로가 NULL 점프 위험 → 가드 없이 심지 않는다 | design decision (calling/ABI hazard) | substrate semantics 원문 미확인. 근거: `-9` 교훈 + 로고스 생성 코드가 orig 심볼을 호출하는 구조(생성 코드 실측). 위험 회피 목적의 방어적 설계 | HYPOTHESIS (hazard model) / VERIFIED (코드가 그렇게 구성됨) |
 | Logos에서 `%group` 안에 `%hook` 없이 메서드를 두면 `error: %orig does not make sense outside a function`(exit 255, 산출물 0줄) | Logos/Theos parser semantics | VM 실측(`logos_err.txt` + `wc -l` = 0) 후 `%hook AFConnection` 추가 시 `LOGOS_OK`/703줄 | VERIFIED (parser behavior) |
 
 ## 6. 다음 단계 (OPEN ISSUES)
 
-0. **`-12` 재테스트 관측 목록** (세부: `docs/siriplus-three-hooks-response-block.md` §6): (a) `response hook guard: _invokeRequestTimeoutForReason:?1 _handleCommand:reply:?1 -> installed …` = 두 셀렉터 실존 1차 판정(0이면 미존재 또는 false-음성 → class-dump/Frida로 확인 후 가드 제거), (b) 발화 시 `INTERCEPT ACTIVE: '<질문>'` + 진동 1519→1520, (c) `intercepted command: <Class>` / `BLOCKED Apple Siri response command: <Class>` = Apple 출력 명령 클래스명 확정, (d) 그래도 "시리입니다"가 나오면 다른 셀렉터/클래스 경로 → 로그 근거로 차단 지점 이동, (e) `replyBlock(nil)` 호출 크래시 여부(타입 가설 검증).
+0. **`-13` 재테스트 관측 목록** (세부: `docs/fix-tts-dealloc-and-short-answer.md` §5): (a) 음성 청취 + 로그 `Speaking utterance SUCCESS: '<답변>'` → 이 로그가 있는데 소리가 없으면 "요청은 성공, 출력 경로 실패"(세션/SpringBoard 출력 경로 문제), 로그 자체가 없으면 답변 텍스트가 빈 값(`answer parsed`/`speak skipped` 확인)이나 발화 전 차단, (b) 짧은 질문("너 이름이 뭐야")에서 답변이 버려지지 않는지 → `answer parsed: <len> chars`와 실제 발화 문장 비교(짧은 ASCII 쓰레기가 선택되는지도 함께), (c) 음악/다른 앱 재생 중 ducking·Siri 녹음 방해 여부(`Playback + DuckOthers`, `setActive:YES` 후 해제 없음), (d) 크래시 유무(TTS 세션 조작 경로).
+   * 이미 관측 완료(-12): 음성 가로채기 성공, 햅틱 발생, Apple 기본 응답 차단 성공. 남은 미분리 항목은 **어떤 셀렉터가 응답을 막았는지**와 `reply` 블록 타입(로그 수집 시 확정).
 
 1. 기기 로그로 훅 실제 진입 프로세스 확정: `HOOK FIRED in process <name>` (원인 2 검증).
 2. 복원 성공 경로 확인: `text via phrases path` / `via direct selector` / `via description regex fallback` / `via description word fallback`. 정규식·단어 폴백 결과이면 잡음 여부를 반드시 확인할 것. 실패 시 `ALL text extraction paths failed, class: <X>` → `<X>` 구조를 class-dump/Frida로 조사해 정확한 경로 추가.
 3. 다중 인젝션 동작 확인: `skip: utterance claimed …`, `suppress orig: utterance handled …` 빈도로 `kPeerClaimWindow = 3.0s` 적정성 판단(지연/누락 발생 시 조정).
 4. StreamGenerate 요청/응답 스키마·`bl` 값 확정(`SNlM0e acquired`, `StreamGenerate POST …`, `answer parsed`, `raw response head`) — 여전히 미검증.
-5. `-9` 포함 기기 설치·동작 테스트 미수행(설치는 사용자 수행/아이피 대기). 팝업 미표시 시 설치 경로·필터 매칭부터 점검(`dpkg -l`, plist plutil, RootHide 금지 목록).
+5. 기기 배포는 사용자가 수행 중(`-10`→`-12` 설치·테스트됨, `-13` 대기). `make install THEOS_DEVICE_IP=<IP>` 명령은 사용자 승인 시에만 실행한다. 팝업/HUD는 `-10` 이후 제거된 상태이므로 화면 피드백은 햅틱(1519/1520)과 로그로만 확인한다.
 6. Git: remote는 `https://github.com/eliteguy1/SiriGemini.git`로 설정돼 있고(`git remote -v` 실측) `-6/-7/-8` 변경분이 **미커밋**. 커밋·push는 사용자 명시 요청 시에만 수행한다.

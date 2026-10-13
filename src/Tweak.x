@@ -133,25 +133,36 @@ static NSString * SiriGeminiStripKeyword(NSString *text) {
     return cleaned.length > 0 ? cleaned : SiriGeminiCleanText(text);
 }
 
-// Siri 발화 출력 (best-effort).
-// HYPOTHESIS: SAUIAssistantUtteranceView의 실제 텍스트 설정 경로는 미확인.
-// 우선 AVSpeechSynthesizer 음성 출력 + NotificationCenter 브로드캐스트로
-// 화면 갱신 훅(SAUIAssistantUtteranceView)이 수신할 수 있게 한다.
+// Siri 발화 출력 (-13): AVSpeechSynthesizer를 정적 참조로 영구 보존한다.
+// 이전 구현은 지역 변수라 ARC에 의해 함수 종료 즉시 해제됐고, 발화 중 객체 해제가
+// 음성을 중단시킨다는 것이 이번 무음 버그의 가정 원인이다(원인 확정 아님 → docs 참고).
+// 실행 지점을 메인 큐로 옮기고, 재생 카테고리 + ko-KR 음성 설정을 추가한다.
+static AVSpeechSynthesizer *gSharedSynth = nil;
+
 static void SiriGeminiSpeak(NSString *text) {
     if (text.length == 0) return;
-    @try {
-        Class ttsClass = objc_getClass("AVSpeechSynthesizer");
-        if (ttsClass) {
-            AVSpeechSynthesizer *synth = [[ttsClass alloc] init];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            // 다른 오디오를 낮추고(TTS 출력 확보) 세션을 active로 만든다.
+            AVAudioSession *audioSession = [AVAudioSession sharedInstance];
+            [audioSession setCategory:AVAudioSessionCategoryPlayback withOptions:AVAudioSessionCategoryOptionDuckOthers error:nil];
+            [audioSession setActive:YES error:nil];
+
+            if (!gSharedSynth) {
+                gSharedSynth = [[AVSpeechSynthesizer alloc] init];
+            }
             AVSpeechUtterance *utterance = [AVSpeechUtterance speechUtteranceWithString:text];
+            utterance.voice = [AVSpeechSynthesisVoice voiceWithLanguage:@"ko-KR"];
             utterance.rate = AVSpeechUtteranceDefaultSpeechRate;
-            [synth speakUtterance:utterance];
+            [gSharedSynth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+            [gSharedSynth speakUtterance:utterance];
+            NSLog(@"[SiriGemini] Speaking utterance SUCCESS: '%@'", text);
+        } @catch (NSException *e) {
+            NSLog(@"[SiriGemini] Speak failed: %@", e);
         }
         [[NSNotificationCenter defaultCenter] postNotificationName:@"SiriGeminiAnswerNotification"
                                                             object:text];
-    } @catch (NSException *e) {
-        NSLog(@"[SiriGemini] Speak failed: %@", e);
-    }
+    });
 }
 
 // ============================================================================
@@ -160,7 +171,7 @@ static void SiriGeminiSpeak(NSString *text) {
 // %ctor(SpringBoard 부팅 중, 메인 스레드)에서 호출하면 워치독이 프로세스를 잡아
 // 무한 리스프링을 일으키므로(-9 기기 증언) 팝업 경로를 완전히 삭제하고 로그만 남긴다.
 // kSiriGeminiBuildTag는 수동 문자열이므로 자동 증가하는 Theos build number와 맞도록 갱신해야 한다.
-static NSString * const kSiriGeminiBuildTag = @"1.0.0-12";
+static NSString * const kSiriGeminiBuildTag = @"1.0.0-13";
 
 static void SiriGeminiReportLoad(void) {
     NSString *procName = [NSProcessInfo processInfo].processName;
