@@ -13,7 +13,7 @@
 * **지원 아키텍처:** `arm64`, `arm64e`
 * **현재 패키지 버전:** 1.0.0 (control) / 빌드 산출물 `1.0.0-1+debug` (Theos debug suffix)
 * **프로젝트 상태:** 2단계 RootHide 빌드 성공 (2026-10-13), runtime 미검증
-* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-3+debug_iphoneos-arm64e.deb` (WebView UI 개선판, SHA256 `fcf1908e…71e8`)
+* **빌드 산출물:** `build/com.csw.sirigemini_1.0.0-4+debug_iphoneos-arm64e.deb` (로그인 상태 UI판, SHA256 `e0e9223f…c173e`)
 
 ## 2. 핵심 컨셉
 
@@ -50,6 +50,7 @@ sirigemini\
 | `1.0.0-1+debug` | 2026-10-13 | 2단계 RootHide 빌드 성공 (arm64+arm64e, .jbroot install_name) — 수정 2건: AVFoundation import 추가, AssistantServices 링크 제거 | 빌드 성공, SHA256 로컬/원격 일치 |
 | `1.0.0-2+debug` | 2026-10-13 | 쿠키 추출 개선 (gemini 초기 URL, 전체 cookieString 저장/주입, 핵심 4종 중 1개 판정) + 재빌드 성공 | 빌드 성공, SHA256 로컬/원격 일치 |
 | `1.0.0-3+debug` | 2026-10-13 | WebView UI 개선 (Safe Area 오토레이아웃, systemBackground, 모달 PageSheet, Safari UA, 인디케이터, 저장 성공 시 자동 닫기, Gemini 툴바 제거) + 재빌드 성공 | 빌드 성공, SHA256 로컬/원격 일치 |
+| `1.0.0-4+debug` | 2026-10-13 | 로그인 상태 UI (동적 버튼 라벨 ✓/필요, 상태 푸터, 로그아웃, viewWillAppear reload) + 재빌드 성공 (에러 2건 해결: PSSpecifier.h import, action ivar→propertyForKey) | 빌드 성공, SHA256 로컬/원격 일치 |
 
 ## 5. 검증 상태 (Fact-Check Gate)
 

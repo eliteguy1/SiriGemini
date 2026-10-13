@@ -1,0 +1,47 @@
+# 긴급 개선 지시: 설정 화면의 로그인 상태 표시(Status UI) 및 버튼 라벨 동적 갱신
+
+## 1. 문제 현상 및 사용자 피드백
+사용자가 Google 로그인을 완료했음에도 불구하고,
+설정(Settings > SiriGemini) 화면에 계속 정적으로 **"Google 로그인"** 버튼만 그대로 표시되어
+로그인이 된 것인지 안 된 것인지 알 수 없고 혼란이 발생함.
+
+### 원인:
+`Root.plist`에 `PSButtonCell`의 `label`이 정적 문자열 `Google 로그인`으로 하드코딩되어 있고,
+`RootListController.m`에서 로그인 상태(쿠키 저장 여부)를 동적으로 반영하거나 `reloadSpecifiers`하는 로직이 없음.
+
+---
+
+## 2. 구체적 수정 요구사항
+
+### A. `src/Preferences/RootListController.m`:
+1. **로그인 상태 동적 반영**:
+   - `kPrefsPath` (`/var/mobile/Library/Preferences/com.csw.sirigemini.plist`)를 읽어서 `cookieString.length > 0` 또는 `__Secure-1PSID.length > 0`인지 확인.
+   - `specifiers` 메소드에서:
+     - `_specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];` 로드 후,
+     - 로그인 버튼 specifier (`action == openGoogleLogin:`)를 찾아서:
+       - **로그인 완료 상태인 경우:**
+         - 버튼 라벨: `@"Google 계정 재연결 (로그인됨 ✓)"`
+       - **미로그인 상태인 경우:**
+         - 버튼 라벨: `@"Google 로그인 (로그인 필요)"`
+     - 로그인 상태 안내 셀(`PSSpecifier`) 또는 그룹 푸터를 동적으로 구성:
+       - 로그인 완료 시: `@"현재 상태: Google 계정 연동 완료 (Siri 사용 가능)"`
+       - 미로그인 시: `@"현재 상태: 미로그인 (Google 로그인이 필요합니다)"`
+2. **로그아웃 / 쿠키 삭제 기능 추가**:
+   - `logoutGoogle:` 액션 추가:
+     - `kPrefsPath`에서 `cookieString`, `__Secure-1PSID`, `__Secure-1PSIDTS` 키 삭제 후 저장.
+     - Tweak에 notify (`com.csw.sirigemini.settingschanged`) 전송.
+     - `[self reloadSpecifiers];` 호출.
+     - 얼럿: `@"로그아웃 완료 (저장된 쿠키가 삭제되었습니다)"`.
+   - 로그인된 상태일 때만 `Root.plist` 또는 코드에서 "로그아웃" 버튼 셀이 보이거나 활성화되도록 처리.
+3. **`viewWillAppear:` 구현**:
+   - 모달이 닫히고 복귀했을 때 즉시 반영되도록 `[self reloadSpecifiers];` 호출.
+
+### B. `src/Preferences/Resources/Root.plist`:
+- 기본 구조 정리 및 상태 표시 그룹/푸터 텍스트 보강.
+
+### C. macOS VM 동기화 및 재빌드:
+- 수정된 Preferences 파일들 VM(`~/build_sirigemini`)으로 scp 동기화.
+- `make clean && make package THEOS_PACKAGE_SCHEME=roothide` 실행.
+- 산출물 deb (`1.0.0-4+debug`) 회수.
+
+수정 및 빌드 완료 후 6대 양식에 맞춰 보고하세요.

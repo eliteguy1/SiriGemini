@@ -44,13 +44,21 @@
 			<key>action</key>
 			<string>openGoogleLogin:</string>
 			<key>label</key>
-			<string>Google 로그인</string>
+			<string>Google 로그인 (로그인 필요)</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>action</key>
+			<string>logoutGoogle:</string>
+			<key>label</key>
+			<string>로그아웃 (쿠키 삭제)</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>로그인 버튼 → WebView에서 Google 로그인 → 우상단 완료. __Secure-1PSID / __Secure-1PSIDTS 쿠키가 저장됩니다. (1단계: 응답 파싱은 placeholder)</string>
+			<string>현재 상태: 미로그인 (Google 로그인이 필요합니다). 로그인 버튼 → WebView에서 Google 로그인 → 우상단 완료. 전체 세션 쿠키가 저장됩니다.</string>
 		</dict>
 	</array>
 	<key>title</key>
